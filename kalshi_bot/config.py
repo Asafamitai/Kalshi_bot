@@ -37,6 +37,7 @@ class Config:
     telegram_allowed_user_ids: frozenset[str] = frozenset()
     scan_interval: int = 300
     min_saving: Decimal = Decimal("0.02")
+    max_spread: Decimal = Decimal("0.10")
     budget: Decimal = Decimal("10")
     live_trading: bool = False
     db_path: str = "kalshi_bot.sqlite3"
@@ -64,6 +65,7 @@ class Config:
             telegram_allowed_user_ids=frozenset(allowed),
             scan_interval=int(env.get("SCAN_INTERVAL_SECONDS") or 300),
             min_saving=Decimal(env.get("MIN_SAVING") or "0.02"),
+            max_spread=Decimal(env.get("MAX_SPREAD") or "0.10"),
             budget=Decimal(env.get("BUY_BUDGET_USD") or "10"),
             live_trading=_flag(env.get("LIVE_TRADING")),
             db_path=env.get("DB_PATH") or "kalshi_bot.sqlite3",

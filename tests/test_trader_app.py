@@ -157,10 +157,10 @@ def test_tap_from_stranger_is_ignored(ladder, tmp_path):
 def test_recheck_refuses_closed_market(ladder, tmp_path):
     client = FakeKalshi(ladder)
     store = Store(str(tmp_path / "t.sqlite3"))
-    v = [v for v in find_violations(ladder, D("0.02")) if v.side == "no"][0]
+    v = [v for v in find_violations(ladder, D("0.02"), D("0.10")) if v.side == "no"][0]
     alert = store.get_alert(store.add_alert(v))
     client.markets["APP-T175"]["status"] = "closed"
-    v, problem = trader.recheck(client, alert, D("0.02"))
+    v, problem = trader.recheck(client, alert, D("0.02"), D("0.10"))
     assert v is None and "no longer trading" in problem
 
 
@@ -211,3 +211,12 @@ def test_alert_that_failed_to_send_is_retried_next_scan(ladder, tmp_path):
     assert tg.sent == []
     tg.send = real_send
     assert len(app.scan_once()) == 2
+
+
+def test_tap_refuses_when_reference_book_goes_wide(ladder, mk, tmp_path):
+    app, client, tg = make_app(ladder, tmp_path, live_trading=True)
+    app.scan_once()
+    client.markets["APP-T175"] = mk("APP-T175", 175, "0.01", "0.99")  # quotes pulled to placeholders
+    tap(app, no_button(tg)[1])
+    assert client.orders == []
+    assert "no longer has a real price" in tg.sent[-1][0]

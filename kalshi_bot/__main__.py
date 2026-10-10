@@ -14,14 +14,15 @@ from .store import Store
 from .telegram import Telegram
 
 
-def scan(cfg: Config, min_saving: Decimal) -> None:
+def scan(cfg: Config, min_saving: Decimal, max_spread: Decimal) -> None:
     markets = list(cfg.kalshi_client().iter_open_markets())
     ladders = build_ladders(markets)
-    found = find_violations(markets, min_saving)
+    found = find_violations(markets, min_saving, max_spread)
     Store(cfg.db_path).log_findings(found)
     print(
         f"{len(markets)} open markets, {len(ladders)} ladders "
-        f"({sum(len(l) for l in ladders)} rungs), {len(found)} violations >= {min_saving * 100:g}¢"
+        f"({sum(len(l) for l in ladders)} rungs), {len(found)} violations >= {min_saving * 100:g}¢ "
+        f"({sum(v.buyable for v in found)} buyable) against books no wider than {max_spread * 100:g}¢"
     )
     for v in found:
         print(console_line(v))
@@ -32,6 +33,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     scan_p = sub.add_parser("scan", help="scan every open market once and print what contradicts")
     scan_p.add_argument("--min-saving", type=Decimal, help="dollars, e.g. 0.01 (default: MIN_SAVING)")
+    scan_p.add_argument("--max-spread", type=Decimal, help="dollars, e.g. 0.05 (default: MAX_SPREAD)")
     sub.add_parser("run", help="scan every SCAN_INTERVAL_SECONDS and alert on Telegram")
     args = parser.parse_args(argv)
 
@@ -40,7 +42,11 @@ def main(argv: list[str] | None = None) -> None:
     cfg = Config.from_env()
 
     if args.command == "scan":
-        scan(cfg, args.min_saving if args.min_saving is not None else cfg.min_saving)
+        scan(
+            cfg,
+            args.min_saving if args.min_saving is not None else cfg.min_saving,
+            args.max_spread if args.max_spread is not None else cfg.max_spread,
+        )
         return
 
     if cfg.live_trading and not (cfg.kalshi_key_id and cfg.kalshi_private_key):

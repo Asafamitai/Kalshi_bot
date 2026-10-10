@@ -41,7 +41,7 @@ class App:
     def scan_once(self) -> list[Violation]:
         """Scan every open market; alert on violations that are new or grew by min_saving."""
         markets = list(self.scan_client.iter_open_markets())
-        found = find_violations(markets, self.cfg.min_saving)
+        found = find_violations(markets, self.cfg.min_saving, self.cfg.max_spread)
         self.store.log_findings(found)
 
         fresh, alerted = [], {}

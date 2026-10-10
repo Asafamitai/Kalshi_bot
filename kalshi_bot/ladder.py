@@ -61,13 +61,15 @@ class Rung:
     @classmethod
     def from_market(cls, m: dict) -> Rung | None:
         strike_type = m.get("strike_type")
-        if strike_type in ABOVE:
-            strike = m.get("floor_strike")
-        elif strike_type in BELOW:
-            strike = m.get("cap_strike")
+        floor, cap = m.get("floor_strike"), m.get("cap_strike")
+        # A threshold has exactly one bound. Kalshi also tags some "exactly N"
+        # buckets as `less` with floor == cap; those are not nested, so skip
+        # anything carrying both.
+        if strike_type in ABOVE and floor is not None and cap is None:
+            strike = floor
+        elif strike_type in BELOW and cap is not None and floor is None:
+            strike = cap
         else:
-            return None
-        if strike is None:
             return None
         # Rungs only compare when they measure the same thing at the same time:
         # same event, same strike type, same close, and the same rules text
@@ -106,8 +108,13 @@ class Rung:
 
     def is_empty(self, side: str) -> bool:
         """A 1.00 ask, or an ask with no bid behind it, is not a price."""
-        ask, bid = self.ask(side), self.bid(side)
-        return ask >= ONE or ask <= ZERO or bid <= ZERO
+        # Kalshi fills missing quotes with 0 or 1 (a fully empty book can even
+        # show a 0.00 YES ask and a 1.00 NO bid), so only 0 < bid < ask < 1 is real.
+        return not (ZERO < self.bid(side) < self.ask(side) < ONE)
+
+    def is_priced(self, side: str, max_spread: Decimal) -> bool:
+        """A two-sided book tight enough for its mid to be a price."""
+        return not self.is_empty(side) and self.ask(side) - self.bid(side) <= max_spread
 
     def safety(self, side: str) -> Decimal:
         """Higher means this contract pays in a superset of states."""
@@ -149,6 +156,7 @@ class Violation:
 
     @property
     def empty_books(self) -> list[str]:
+        # In practice only the safer rung: the dominated one must be priced.
         return [r.ticker for r in (self.safer, self.dominated) if r.is_empty(self.side)]
 
     @property
@@ -170,32 +178,31 @@ def build_ladders(markets: Iterable[dict]) -> list[list[Rung]]:
     return [sorted(g, key=lambda r: r.strike) for g in groups.values() if len(g) >= 2]
 
 
-def ladder_violations(rungs: list[Rung], min_saving: Decimal) -> list[Violation]:
+def ladder_violations(rungs: list[Rung], min_saving: Decimal, max_spread: Decimal) -> list[Violation]:
     """For each rung and side, the strongest contradiction against a less-safe rung."""
     found = []
     for side in SIDES:
+        # Only a quote someone could trade at proves anything: the dominated
+        # rung needs a two-sided book no wider than max_spread for its mid to
+        # mean something, and the safer rung needs an ask to buy.
+        priced = [r for r in rungs if r.is_priced(side, max_spread)]
         for safer in rungs:
+            if not ZERO < safer.ask(side) < ONE:
+                continue
             best = None
-            for other in rungs:
+            for other in priced:
                 if other.safety(side) >= safer.safety(side):
                     continue
                 v = Violation(side, safer, other)
-                if v.saving < min_saving:
-                    continue
-                # Prefer a dominated rung with a real book over a bigger number
-                # computed from an empty one.
-                if best is None or (not other.is_empty(side), v.saving) > (
-                    not best.dominated.is_empty(side),
-                    best.saving,
-                ):
+                if v.saving >= min_saving and (best is None or v.saving > best.saving):
                     best = v
             if best is not None:
                 found.append(best)
     return found
 
 
-def find_violations(markets: Iterable[dict], min_saving: Decimal) -> list[Violation]:
+def find_violations(markets: Iterable[dict], min_saving: Decimal, max_spread: Decimal) -> list[Violation]:
     found = []
     for rungs in build_ladders(markets):
-        found.extend(ladder_violations(rungs, min_saving))
+        found.extend(ladder_violations(rungs, min_saving, max_spread))
     return sorted(found, key=lambda v: (v.buyable, v.saving), reverse=True)

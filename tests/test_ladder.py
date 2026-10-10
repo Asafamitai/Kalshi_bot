@@ -1,9 +1,15 @@
 from decimal import Decimal
 
-from kalshi_bot.ladder import build_ladders, find_violations
+from kalshi_bot.ladder import build_ladders
+from kalshi_bot.ladder import find_violations as _find
 
 D = Decimal
 MIN = D("0.02")
+WIDE = D("0.10")
+
+
+def find_violations(markets, min_saving, max_spread=WIDE):
+    return _find(markets, min_saving, max_spread)
 
 
 def test_real_example_safer_no_is_cheaper(mk):
@@ -85,6 +91,15 @@ def test_one_dollar_ask_is_empty(mk):
     assert ladder[0].is_empty("no")  # NO ask 1.00: nobody is selling NO
 
 
+def test_fully_empty_book_as_kalshi_sends_it(mk):
+    # Seen live: no quotes at all comes back as YES 0.00/0.00 and NO 1.00/1.00.
+    m = mk("A-T100", 100, "0.00", "0.00")
+    m["no_bid_dollars"], m["no_ask_dollars"] = "1.0000", "1.0000"
+    rungs = build_ladders([m, mk("A-T110", 110, "0.10", "0.12")])[0]
+    assert rungs[0].is_empty("yes") and rungs[0].is_empty("no")
+    assert not rungs[1].is_empty("yes") and not rungs[1].is_empty("no")
+
+
 def test_prefers_real_dominated_book_over_bigger_empty_one(mk):
     markets = [
         mk("A-T100", 100, "0.00", "0.10"),  # empty: NO 0.90 / 1.00, "mid" 0.95
@@ -118,8 +133,37 @@ def test_between_and_unstruck_markets_are_ignored(mk):
     assert build_ladders([between, no_strike, mk("A-T120", 120, "0.1", "0.2")]) == []
 
 
+def test_exactly_n_buckets_tagged_less_are_not_a_ladder(mk):
+    # Seen live (Starship launches): "exactly 7" comes as strike_type `less`
+    # with floor_strike == cap_strike == 7. Buckets are not nested.
+    buckets = []
+    for n, (bid, ask) in {5: ("0.48", "0.54"), 7: ("0.01", "0.02")}.items():
+        m = mk(f"S-{n}.0", n, bid, ask, strike_type="less")
+        m["floor_strike"] = n
+        buckets.append(m)
+    assert build_ladders(buckets) == []
+    assert find_violations(buckets, MIN) == []
+
+
 def test_min_saving_threshold(mk):
     markets = [mk("A-T100", 100, "0.10", "0.12"), mk("A-T110", 110, "0.12", "0.14")]
     # NO@110 ask 0.88 vs NO@100 mid 0.89: a 1c contradiction.
     assert [v.saving for v in find_violations(markets, D("0.01")) if v.side == "no"] == [D("0.01")]
     assert find_violations(markets, D("0.02")) == []
+
+
+def test_placeholder_book_is_not_a_reference_price(mk):
+    # Seen live: 0.01 / 0.99 quotes have a 0.50 mid that means nothing.
+    # YES on "above 2" at 0.09 looks 41c cheap against the 0.50 "mid" of "above 3".
+    markets = [mk("A-T2", 2, "0.07", "0.09"), mk("A-T3", 3, "0.01", "0.99")]
+    assert find_violations(markets, MIN) == []
+    loose = find_violations(markets, MIN, max_spread=D("1"))
+    assert [(v.side, v.safer.ticker, v.saving) for v in loose] == [("yes", "A-T2", D("0.41"))]
+
+
+def test_nothing_to_buy_is_not_a_violation(mk):
+    # The safer rung has no ask at all (YES 0.00 / 0.00 as Kalshi sends it).
+    safer = mk("A-T100", 100, "0.00", "0.00")
+    safer["no_bid_dollars"], safer["no_ask_dollars"] = "1.0000", "1.0000"
+    markets = [safer, mk("A-T110", 110, "0.40", "0.42")]
+    assert [v for v in find_violations(markets, MIN) if v.safer.ticker == "A-T100"] == []

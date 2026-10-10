@@ -26,7 +26,9 @@ def contracts_for(budget: Decimal, ask: Decimal) -> int:
     return int(budget // ask) if ask > 0 else 0
 
 
-def recheck(client: KalshiClient, alert: Alert, min_saving: Decimal) -> tuple[Violation | None, str | None]:
+def recheck(
+    client: KalshiClient, alert: Alert, min_saving: Decimal, max_spread: Decimal
+) -> tuple[Violation | None, str | None]:
     """Fresh violation for the alerted pair, or the reason it can no longer be bought."""
     markets = {m["ticker"]: m for m in client.get_markets([alert.safer, alert.dominated])}
     missing = [t for t in (alert.safer, alert.dominated) if t not in markets]
@@ -38,6 +40,8 @@ def recheck(client: KalshiClient, alert: Alert, min_saving: Decimal) -> tuple[Vi
     safer = Rung.from_market(markets[alert.safer])
     dominated = Rung.from_market(markets[alert.dominated])
     v = Violation(alert.side, safer, dominated)
+    if not dominated.is_priced(alert.side, max_spread):
+        return v, f"{dominated.ticker} no longer has a real price to compare against"
     if not v.buyable:
         return v, f"empty book on {', '.join(v.empty_books)}"
     if v.saving < min_saving:
@@ -46,7 +50,7 @@ def recheck(client: KalshiClient, alert: Alert, min_saving: Decimal) -> tuple[Vi
 
 
 def buy(client: KalshiClient, alert: Alert, cfg: Config) -> Outcome:
-    v, problem = recheck(client, alert, cfg.min_saving)
+    v, problem = recheck(client, alert, cfg.min_saving, cfg.max_spread)
     if problem:
         return Outcome("refused", f"Not bought: {problem}.", v)
     if v.ask > alert.ask:
