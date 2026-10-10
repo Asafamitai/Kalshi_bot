@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -22,30 +21,6 @@ def load_dotenv(path: str | Path = ".env") -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
-
-
-def _first(env, *names: str) -> str | None:
-    for name in names:
-        if env.get(name):
-            return env[name]
-    return None
-
-
-def _account_from_json(env) -> tuple[str | None, str | None]:
-    """(key_id, pem) from KALSHI_ACCOUNTS_JSON, the ladder-coherence format:
-    a list of {name, key_id, private_key_pem}, picked by LADDER_KALSHI_ACCOUNT (default "main")."""
-    raw = env.get("KALSHI_ACCOUNTS_JSON")
-    if not raw:
-        return None, None
-    try:
-        accounts = json.loads(raw)
-    except ValueError:
-        return None, None
-    want = env.get("LADDER_KALSHI_ACCOUNT") or "main"
-    chosen = next((a for a in accounts if a.get("name") == want), accounts[0] if accounts else None)
-    if not chosen:
-        return None, None
-    return chosen.get("key_id"), chosen.get("private_key_pem")
 
 
 @dataclass(frozen=True)
@@ -78,12 +53,10 @@ class Config:
         key_path = env.get("KALSHI_PRIVATE_KEY_PATH")
         if not pem and key_path:
             pem = Path(key_path).expanduser().read_text()
-        if not (key_id and pem):
-            key_id, pem = _account_from_json(env)
         if pem:
             # Env-var UIs often flatten newlines; PEM needs them back.
             pem = pem.replace("\\n", "\n")
-        chat_id = _first(env, "TELEGRAM_CHAT_ID", "LADDER_TELEGRAM_CHAT_ID")
+        chat_id = env.get("TELEGRAM_CHAT_ID") or None
         allowed = {u.strip() for u in (env.get("TELEGRAM_ALLOWED_USER_IDS") or "").split(",") if u.strip()}
         if not allowed and chat_id:
             # In a private chat the chat id is the user's id.
@@ -94,7 +67,7 @@ class Config:
             kalshi_base_url=env.get("KALSHI_API_BASE") or DEFAULT_BASE_URL,
             kalshi_key_id=key_id or None,
             kalshi_private_key=pem or None,
-            telegram_token=_first(env, "TELEGRAM_BOT_TOKEN", "LADDER_TELEGRAM_BOT_TOKEN"),
+            telegram_token=env.get("TELEGRAM_BOT_TOKEN") or None,
             telegram_chat_id=chat_id,
             telegram_allowed_user_ids=frozenset(allowed),
             scan_interval=int(env.get("SCAN_INTERVAL_SECONDS") or d.scan_interval),

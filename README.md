@@ -120,13 +120,13 @@ second copy on the same database, and `run.sh` stops a stale one first.
 ## Configuration
 
 See [`.env.example`](.env.example). Real environment variables take
-precedence over `.env`. The `LADDER_*` and `KALSHI_ACCOUNTS_JSON` names from
-ladder-coherence work too.
+precedence over `.env`. Only these names are read, so a token or key that
+belongs to another project in the same environment is never picked up.
 
 | Variable | Default | |
 |---|---|---|
-| `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`), or `KALSHI_ACCOUNTS_JSON` + `LADDER_KALSHI_ACCOUNT` | – | Only for buying. RSA or Ed25519. |
-| `TELEGRAM_BOT_TOKEN` / `LADDER_TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` / `LADDER_TELEGRAM_CHAT_ID` | – | Without them, alerts go to the log. |
+| `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`) | – | Only for buying. RSA or Ed25519. |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | – | Without them, alerts go to the log. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
 | `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |
 | `MAX_SPREAD` | 0.10 | Widest dominated-rung book whose mid still counts. |

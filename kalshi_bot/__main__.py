@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> None:
         print(episodes.report(Store(cfg.db_path), since_hours=args.hours))
     elif args.command == "telegram-chats":
         if not cfg.telegram_token:
-            parser.error("TELEGRAM_BOT_TOKEN (or LADDER_TELEGRAM_BOT_TOKEN) is not set")
+            parser.error("TELEGRAM_BOT_TOKEN is not set")
         telegram_chats(cfg)
     else:
         # One bot per database: a second copy would send every alert twice.
