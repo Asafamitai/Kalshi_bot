@@ -63,6 +63,7 @@ python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
 python -m kalshi_bot report          # how long contradictions survived, and which rung moved
 python -m kalshi_bot paper           # the paper trading books
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
+python -m kalshi_bot telegram-chats --paper  # the same for the paper trading bot
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
 ```
 
@@ -127,11 +128,18 @@ On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
 Every pass, two books, each with its own `PAPER_BANKROLL`, trade what the scan
 found:
 
-- **single** buys the safer contract of every contradiction that passes the
-  alert filters and has a bid behind its ask, up to `PAPER_MAX_TRADE` dollars including the fee. It sells
-  once its bid holds `PAPER_TAKE_PROFIT` (80%) of the maximum profit and can
-  take the whole position, and otherwise holds to settlement. It wins or
-  loses with the outcome.
+- **single** buys the safer contract of every contradiction with a bid
+  behind its ask, at least `MIN_NET_SAVING` after the fee, and its own
+  filters, looser than the alerts' so trades accumulate faster: price
+  `PAPER_MIN_PRICE` to `PAPER_MAX_PRICE` (0.10 to 0.95), at least
+  `PAPER_MIN_DEPTH` (10) contracts at the ask, and `PAPER_MIN_VOLUME_24H` (0)
+  traded in a day. Below 0.10, $15 buys hundreds of contracts and one trade
+  would swamp the rest; volume isn't required because a sale needs a real bid
+  anyway. Each trade records whether it also passed the alert filters, and the
+  report gives those trades' P&L apart. It spends up to `PAPER_MAX_TRADE`
+  dollars including the fee, sells once its bid holds `PAPER_TAKE_PROFIT`
+  (80%) of the maximum profit and can take the whole position, and otherwise
+  holds to settlement. It wins or loses with the outcome.
 - **pair** trades only when the safer ask is below the dominated rung's bid,
   and the pair is profitable after fees. It buys the safer contract and the
   other side of the dominated one, which together pay at least 1 in every
@@ -148,8 +156,25 @@ trading are settled once Kalshi reports a result.
 
 `paper` (or `/paper` in Telegram) shows each book: trades, cash, realized
 P&L, open positions at the bid (or the locked minimum for pairs), how the
-single book did on the trades where a pair was also available, and the latest
-trades.
+single book did on the trades that passed the alert filters and on those where
+a pair was also available, and the latest trades.
+
+#### Its own Telegram bot
+
+Paper trading can have a bot of its own, so its messages stay apart from the
+alerts. After every pass that bought, sold or settled anything, that bot sends
+one message, in Hebrew: each trade bought (contracts, price, cost, saving,
+and whether it also passed the alert filters, or the locked minimum for a
+pair), each trade closed with its P&L, and both books' cash. A long pass is
+split under Telegram's message limit. `/paper` there gives the report; any
+other message gets a short help. Only `KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS`
+(default: its chat id) are answered.
+
+To connect one: create a bot with @BotFather, set
+`KALSHI_LADDER_PAPER_BOT_TOKEN`, write to the new bot once, run
+`python -m kalshi_bot telegram-chats --paper` to find your chat id, set
+`KALSHI_LADDER_PAPER_BOT_CHAT_ID`, and restart. Without it nothing changes:
+paper trading runs silently and `/paper` works on the alert bot.
 
 ### Running in a Claude Code cloud session
 
@@ -168,6 +193,8 @@ belongs to another project in the same environment is never picked up.
 |---|---|---|
 | `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`) | – | Only for buying. RSA or Ed25519. |
 | `KALSHI_LADDER_BOT_TOKEN`, `KALSHI_LADDER_BOT_CHAT_ID` | – | Without them, alerts go to the log. |
+| `KALSHI_LADDER_PAPER_BOT_TOKEN`, `KALSHI_LADDER_PAPER_BOT_CHAT_ID` | – | Paper trading's own bot (optional). |
+| `KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS` | its chat id | Who that bot answers. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
 | `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |
 | `MAX_SPREAD` | 0.10 | Widest dominated-rung book whose mid still counts. |
@@ -181,6 +208,8 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BANKROLL` | 500 | Dollars, per book. |
 | `PAPER_MAX_TRADE` | 15 | Dollars per trade, fees included. |
 | `PAPER_TAKE_PROFIT` | 0.80 | Share of the maximum profit at which the single book sells. |
+| `PAPER_MIN_PRICE`, `PAPER_MAX_PRICE` | 0.10, 0.95 | Single book's buy price band. |
+| `PAPER_MIN_DEPTH`, `PAPER_MIN_VOLUME_24H` | 10, 0 | Single book, contracts. |
 
 ## Tests
 

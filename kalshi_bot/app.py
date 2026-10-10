@@ -29,6 +29,12 @@ HELP = (
     "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
 )
 
+PAPER_HELP = (
+    "<b>בוט המסחר על נייר</b>\n"
+    "אחרי כל סבב סריקה: מה נקנה, נמכר והוכרע.\n"
+    "/paper · מצב שני התיקים: מדרגה בודדת מול זוג נעול"
+)
+
 
 class App:
     def __init__(
@@ -39,6 +45,7 @@ class App:
         trade_client: KalshiClient,
         telegram: Telegram | None,
         clock=time.time,
+        paper_telegram: Telegram | None = None,
     ):
         self.cfg = cfg
         self.store = store
@@ -46,6 +53,8 @@ class App:
         self.trade_client = trade_client
         self.telegram = telegram
         self.clock = clock
+        # Paper trading's own bot, if it has one; /paper also works on the main bot.
+        self.paper_telegram = paper_telegram
 
     def scan_once(self) -> list[Violation]:
         """One pass: read everything, track episodes, alert on the best new options."""
@@ -74,9 +83,11 @@ class App:
         if self.cfg.paper_trading:
             try:
                 p = paper.step(self.store, self.scan_client, self.cfg, found, by_ticker, now)
-                papered = f"; paper: {p['opened']} opened, {p['sold']} sold, {p['settled']} settled"
+                papered = f"; paper: {len(p['opened'])} opened, {p['sold']} sold, {p['settled']} settled"
             except Exception:
                 log.exception("paper trading failed")
+            else:
+                self.send_paper(p)
 
         self.store.log_scan(at=now, seconds=now - started, markets=len(markets), ladders=len(ladders),
                             violations=len(found), alertable=len(qualifying), sent=sent)
@@ -93,8 +104,30 @@ class App:
             buttons = buy_buttons(self.store.add_alert(v), v, self.cfg.buy_sizes) or None
         self.telegram.send(self.cfg.telegram_chat_id, alert_text(v), buttons)
 
+    def send_paper(self, done: dict) -> None:
+        """What paper trading did this pass, to its own bot; a failed send never stops the scan."""
+        if self.paper_telegram is None:
+            return
+        try:
+            for text in paper.pass_messages(self.store, self.cfg, done):
+                self.paper_telegram.send(self.cfg.paper_telegram_chat_id, text)
+        except Exception:
+            log.exception("could not send the paper trading update")
+
     def _allowed(self, user: dict | None) -> bool:
         return str((user or {}).get("id")) in self.cfg.telegram_allowed_user_ids
+
+    def handle_paper_message(self, msg: dict) -> None:
+        if str((msg.get("from") or {}).get("id")) not in self.cfg.paper_telegram_allowed_user_ids:
+            return  # strangers get silence
+        words = (msg.get("text") or "").strip().split()
+        if not words:
+            return
+        if words[0].split("@")[0].lower() == "/paper":
+            reply = f"<pre>{escape(paper.report(self.store, self.cfg))}</pre>"
+        else:
+            reply = PAPER_HELP
+        self.paper_telegram.send(self.cfg.paper_telegram_chat_id, reply)
 
     def handle_message(self, msg: dict) -> None:
         if not self._allowed(msg.get("from")):
@@ -178,21 +211,35 @@ class App:
                 log.exception("scan failed")
             time.sleep(max(0.0, self.cfg.scan_interval - (time.monotonic() - started)))
 
+    def _handle_update(self, update: dict) -> None:
+        if "callback_query" in update:
+            self.handle_callback(update["callback_query"])
+        elif "message" in update:
+            self.handle_message(update["message"])
+
+    def _handle_paper_update(self, update: dict) -> None:
+        if "message" in update:
+            self.handle_paper_message(update["message"])
+
+    @staticmethod
+    def _poll(telegram: Telegram, handle) -> None:
+        offset = None
+        while True:
+            try:
+                for update in telegram.updates(offset):
+                    offset = update["update_id"] + 1
+                    handle(update)
+            except Exception:
+                log.exception("telegram polling failed")
+                time.sleep(5)
+
     def run(self) -> None:
+        if self.paper_telegram is not None:
+            threading.Thread(target=self._poll, args=(self.paper_telegram, self._handle_paper_update),
+                             name="paper-telegram", daemon=True).start()
         if self.telegram is None:
             log.info("Telegram not configured: alerts go to this log only")
             self._scan_forever()
             return
         threading.Thread(target=self._scan_forever, name="scanner", daemon=True).start()
-        offset = None
-        while True:
-            try:
-                for update in self.telegram.updates(offset):
-                    offset = update["update_id"] + 1
-                    if "callback_query" in update:
-                        self.handle_callback(update["callback_query"])
-                    elif "message" in update:
-                        self.handle_message(update["message"])
-            except Exception:
-                log.exception("telegram polling failed")
-                time.sleep(5)
+        self._poll(self.telegram, self._handle_update)

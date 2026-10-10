@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     dominated TEXT NOT NULL,
     saving TEXT NOT NULL,
     bid_through INTEGER NOT NULL,
+    -- whether it also passed the stricter alert filters
+    alertable INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open',
     closed_at REAL,
     exit_reason TEXT
@@ -116,10 +118,12 @@ CREATE TABLE IF NOT EXISTS paper_legs (
 );
 """
 
-# Columns added after the first release; a database created before then gets them on open.
+# Columns added after a table was first released; an older database gets them on open.
 _ADDED_COLUMNS = {
-    "episodes_open": ("ref_safer_ask", "ref_dominated_mid"),
-    "episodes_closed": ("ref_safer_ask", "ref_dominated_mid", "close_safer_ask", "close_dominated_mid", "closed_by"),
+    "episodes_open": ("ref_safer_ask TEXT", "ref_dominated_mid TEXT"),
+    "episodes_closed": ("ref_safer_ask TEXT", "ref_dominated_mid TEXT", "close_safer_ask TEXT",
+                        "close_dominated_mid TEXT", "closed_by TEXT"),
+    "paper_trades": ("alertable INTEGER NOT NULL DEFAULT 0",),
 }
 
 _EPISODE_COLS = ("key", "side", "safer", "dominated", "opened_at", "last_seen", "first_saving",
@@ -147,8 +151,8 @@ class Store:
             for table, cols in _ADDED_COLUMNS.items():
                 have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
                 for col in cols:
-                    if col not in have:
-                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                    if col.split()[0] not in have:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
 
     def _write(self, sql: str, args=()) -> sqlite3.Cursor:
         with self._lock, self._conn:
@@ -260,14 +264,14 @@ class Store:
     # Paper trading.
 
     def add_paper_trade(self, strategy: str, v: Violation, legs: list[tuple[str, str, int, Decimal, Decimal]],
-                        at: float) -> int:
+                        alertable: bool, at: float) -> int:
         """`legs` are (ticker, side, count, price, cost including the fee)."""
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "INSERT INTO paper_trades (strategy, opened_at, event, side, safer, dominated, saving, bid_through) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO paper_trades (strategy, opened_at, event, side, safer, dominated, saving, bid_through, "
+                "alertable) VALUES (?,?,?,?,?,?,?,?,?)",
                 (strategy, at, v.safer.event_ticker, v.side, v.safer.ticker, v.dominated.ticker, str(v.saving),
-                 int(v.bid_through)),
+                 int(v.bid_through), int(alertable)),
             )
             for ticker, side, count, price, cost in legs:
                 self._conn.execute(
@@ -289,24 +293,25 @@ class Store:
             self._conn.executemany("UPDATE paper_legs SET mark = ? WHERE id = ?",
                                    [(str(m), leg_id) for leg_id, m in marks.items()])
 
-    def close_paper_leg(self, leg_id: int, how: str, exit_price: Decimal, payout: Decimal, at: float) -> None:
-        """`how` is sold or settled; the trade closes with its last open leg."""
+    def close_paper_leg(self, leg_id: int, how: str, exit_price: Decimal, payout: Decimal, at: float) -> int | None:
+        """`how` is sold or settled; the trade closes with its last open leg. Returns its id if it just did."""
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE paper_legs SET status = ?, exit_price = ?, payout = ?, closed_at = ? WHERE id = ?",
                 (how, str(exit_price), str(payout), at, leg_id),
             )
             (trade_id,), = self._conn.execute("SELECT trade_id FROM paper_legs WHERE id = ?", (leg_id,))
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE paper_trades SET status = 'closed', closed_at = ?, exit_reason = ? WHERE id = ? AND NOT EXISTS "
                 "(SELECT 1 FROM paper_legs WHERE trade_id = ? AND status = 'open')",
                 (at, how, trade_id, trade_id),
             )
+            return trade_id if cur.rowcount == 1 else None
 
     def paper_trades(self) -> list[dict]:
         """Every paper trade, oldest first, with its legs."""
         tcols = ["id", "strategy", "opened_at", "event", "side", "safer", "dominated", "saving", "bid_through",
-                 "status", "closed_at", "exit_reason"]
+                 "alertable", "status", "closed_at", "exit_reason"]
         lcols = ["trade_id", "ticker", "side", "count", "price", "cost", "mark", "status", "exit_price", "payout"]
         trades = {r[0]: dict(zip(tcols, r), legs=[])
                   for r in self._read(f"SELECT {', '.join(tcols)} FROM paper_trades ORDER BY id")}

@@ -2,10 +2,13 @@ import sqlite3
 from decimal import Decimal
 
 import pytest
-from test_trader_app import make_app, say
+from test_trader_app import Clock, FakeKalshi, FakeTelegram, alerts_sent, make_app, say
 
 from kalshi_bot import episodes, paper
+from kalshi_bot.app import App
 from kalshi_bot.config import Config
+from kalshi_bot.ladder import find_violations
+from kalshi_bot.store import Store
 
 D = Decimal
 
@@ -57,6 +60,37 @@ def test_pair_buys_both_legs_and_one_trade_per_event(ladder, tmp_path):
     assert sum(leg["cost"] for leg in t["legs"]) == D("14.59")  # 13.90 + 0.69: locked at 16 - 14.59
     app.scan_once()
     assert len(book(app, "pair")) == 1 and len(book(app, "single")) == 1
+
+
+def test_single_trades_what_is_too_thin_to_alert(mk, tmp_path):
+    # 20 contracts at the ask and nothing traded today: no alert, but a paper trade.
+    thin = [mk("APP-T175", 175, "0.02", "0.04", volume_24h="0.00"),
+            mk("APP-T195", 195, "0.14", "0.16", yes_bid_size="20.00", volume_24h="0.00")]
+    app, _, tg = make_app(thin, tmp_path)
+    app.scan_once()
+    assert alerts_sent(tg) == []
+    (t,) = book(app, "single")
+    assert legs(t) == [("APP-T195", "no", 17, D("0.86"))] and not t["alertable"]
+
+
+def test_alert_grade_trades_are_marked(ladder, tmp_path):
+    app, _, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    assert book(app, "single")[0]["alertable"] == 1
+
+
+@pytest.mark.parametrize("dominated, safer, size, bought", [
+    (("0.02", "0.04"), ("0.14", "0.16"), "10.00", True),   # NO 0.86 against 0.96 / 0.98, 10 deep: the floor
+    (("0.02", "0.04"), ("0.14", "0.16"), "9.00", False),   # 9 deep
+    (("0.80", "0.82"), ("0.88", "0.90"), "100.00", True),  # NO 0.12 against 0.18 / 0.20
+    (("0.80", "0.82"), ("0.91", "0.93"), "100.00", False), # NO 0.09: under the price floor
+    (("0.01", "0.02"), ("0.04", "0.06"), "100.00", False), # NO 0.96 against 0.98 / 0.99: over the cap
+])
+def test_single_filters(mk, dominated, safer, size, bought):
+    markets = [mk("APP-T175", 175, *dominated),
+               mk("APP-T195", 195, *safer, yes_bid_size=size, volume_24h="0.00")]
+    (v,) = [v for v in find_violations(markets, D("0.01"), D("0.10")) if v.side == "no"]
+    assert paper.single_filters(v, Config()) is bought
 
 
 def test_no_pair_when_the_safer_ask_is_only_below_the_mid(mk, tmp_path):
@@ -160,7 +194,9 @@ def test_report(ladder, tmp_path):
     text = tg.sent[-1][0]
     assert "single: 1 trades, 0 open, cash $485.23" in text
     assert "closed 1: won 0, lost 1, P&amp;L -$14.77 on $14.77 (-100.0%); sold 0, settled 1" in text
+    assert "of which pass the alert filters: 1, P&amp;L -$14.77" in text
     assert "of which bid-through (a pair was locked): 1, P&amp;L -$14.77" in text
+    assert "single buys at 0.10-0.95, depth &gt;= 10, 24h volume &gt;= 0" in text
     assert "pair: 1 trades, 0 open, cash $501.41" in text
     assert "16 NO APP-T195 @0.86 + 16 YES APP-T175 @0.04  $14.59  settled +$1.41" in text
 
@@ -175,9 +211,32 @@ def test_report_while_open(ladder, tmp_path):
 
 
 def test_config():
-    cfg = Config.from_env({"PAPER_TRADING": "off", "PAPER_MAX_TRADE": "25", "PAPER_BANKROLL": "1000"})
+    cfg = Config.from_env({"PAPER_TRADING": "off", "PAPER_MAX_TRADE": "25", "PAPER_BANKROLL": "1000",
+                           "PAPER_MIN_PRICE": "0.2", "PAPER_MAX_PRICE": "0.9", "PAPER_MIN_DEPTH": "5",
+                           "PAPER_MIN_VOLUME_24H": "7"})
     assert not cfg.paper_trading and cfg.paper_max_trade == D("25") and cfg.paper_bankroll == D("1000")
-    assert Config.from_env({}).paper_trading
+    assert (cfg.paper_min_price, cfg.paper_max_price, cfg.paper_min_depth, cfg.paper_min_volume_24h) == (
+        D("0.2"), D("0.9"), D("5"), D("7"))
+    d = Config.from_env({})
+    assert d.paper_trading and (d.paper_min_price, d.paper_max_price, d.paper_min_depth) == (
+        D("0.10"), D("0.95"), D("10"))
+
+
+def test_paper_trades_from_before_the_alertable_column(ladder, tmp_path):
+    conn = sqlite3.connect(tmp_path / "t.sqlite3")
+    conn.execute("CREATE TABLE paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, strategy TEXT NOT NULL, "
+                 "opened_at REAL NOT NULL, event TEXT NOT NULL, side TEXT NOT NULL, safer TEXT NOT NULL, "
+                 "dominated TEXT NOT NULL, saving TEXT NOT NULL, bid_through INTEGER NOT NULL, "
+                 "status TEXT NOT NULL DEFAULT 'open', closed_at REAL, exit_reason TEXT)")
+    conn.execute("INSERT INTO paper_trades (strategy, opened_at, event, side, safer, dominated, saving, bid_through) "
+                 "VALUES ('single', 1, 'OLD', 'no', 'OLD-T2', 'OLD-T1', '0.02', 0)")
+    conn.commit()
+    conn.close()
+    store = Store(str(tmp_path / "t.sqlite3"))
+    assert store.paper_trades()[0]["alertable"] == 0
+    app, _, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    assert [t["alertable"] for t in book(app, "single")] == [0, 1]
 
 
 # Which rung moved
@@ -252,3 +311,92 @@ def test_an_older_database_gains_the_new_columns(ladder, mk, tmp_path):
     client.markets["APP-T195"] = mk("APP-T195", 195, "0.02", "0.03")
     app.scan_once()
     assert closed_by(app)["APP-T195|no"] == "safer"
+
+
+# Paper trading's own Telegram bot
+
+
+def make_paper_app(markets, tmp_path, **cfg):
+    config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}),
+                    paper_telegram_token="tok", paper_telegram_chat_id="77",
+                    paper_telegram_allowed_user_ids=frozenset({"77"}), **cfg)
+    client = FakeKalshi(markets)
+    tg, paper_tg = FakeTelegram(), FakeTelegram()
+    app = App(config, Store(str(tmp_path / "t.sqlite3")), client, client, tg, clock=Clock(), paper_telegram=paper_tg)
+    return app, client, tg, paper_tg
+
+
+def test_paper_bot_hears_what_each_pass_bought(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    (text, buttons), = paper_tg.sent
+    assert buttons is None and text.startswith("📝 <b>מסחר על נייר</b>\n<b>נקנו</b>")
+    link = '<a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">'
+    assert f"• בודדת · 17 NO {link}APP-T195</a> ב-0.86 · $14.77 · חיסכון 11.0¢ · עובר את סינון ההתראות" in text
+    assert "$14.59 · חיסכון 11.0¢ · נעול לפחות +$1.41" in text
+    assert text.endswith("קופה בודדת $485.23 · קופה זוג $485.41")
+    assert len(alerts_sent(tg)) == 1 and not any("מסחר על נייר" in t for t, _ in tg.sent)
+    app.scan_once()
+    assert len(paper_tg.sent) == 1  # nothing new, nothing sent
+
+
+def test_paper_bot_hears_what_closed(ladder, mk, tmp_path):
+    app, client, _, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")  # NO bid 0.98: take profit
+    app.scan_once()
+    assert "<b>נסגרו</b>\n• ✅ בודדת · APP-T195 · נמכר ביעד הרווח · <b>+$1.86</b>" in paper_tg.sent[-1][0]
+    resolve(client, APP_T175="yes", APP_T195="yes")
+    app.scan_once()
+    text = paper_tg.sent[-1][0]
+    assert "• ✅ זוג · " in text and " · הוכרע · <b>+$1.41</b>" in text and "נקנו" not in text
+
+
+def test_paper_bot_losing_trade(ladder, tmp_path):
+    app, client, _, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    resolve(client, APP_T175="yes", APP_T195="yes")
+    app.scan_once()
+    assert "• ❌ בודדת · APP-T195 · הוכרע · <b>-$14.77</b>" in paper_tg.sent[-1][0]
+
+
+def test_paper_bot_commands(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    app.handle_paper_message({"from": {"id": 77}, "text": "/paper"})
+    assert paper_tg.sent[-1][0].startswith("<pre>Paper trading:") and "single: 1 trades" in paper_tg.sent[-1][0]
+    app.handle_paper_message({"from": {"id": 77}, "text": "hi"})
+    assert "בוט המסחר על נייר" in paper_tg.sent[-1][0]
+    sent = len(paper_tg.sent)
+    app.handle_paper_message({"from": {"id": 42}, "text": "/paper"})  # the alert bot's user isn't this bot's
+    assert len(paper_tg.sent) == sent
+
+
+def test_a_failed_paper_message_does_not_stop_the_scan(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    paper_tg.send = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("telegram down"))
+    app.scan_once()
+    assert len(app.store.paper_trades()) == 2 and len(alerts_sent(tg)) == 1
+
+
+def test_long_passes_are_split_under_telegrams_limit(mk, tmp_path):
+    markets = []
+    for i in range(40):
+        ev = f"KXLONGEVENTNAME-26OCT-{i:02d}"
+        markets += [mk(f"{ev}-T175", 175, "0.02", "0.04", event=ev), mk(f"{ev}-T195", 195, "0.14", "0.16", event=ev)]
+    app, _, _, paper_tg = make_paper_app(markets, tmp_path, paper_bankroll=D("10000"))
+    app.scan_once()
+    texts = [t for t, _ in paper_tg.sent]
+    assert len(texts) > 1 and all(len(t) <= 4096 for t in texts)
+    assert sum(t.count("\n• ") for t in texts) + sum(t.startswith("• ") for t in texts) == 80
+
+
+def test_paper_bot_config():
+    cfg = Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "SECRET", "KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77",
+                           "KALSHI_LADDER_BOT_CHAT_ID": "42"})
+    assert cfg.paper_telegram and cfg.paper_telegram_chat_id == "77"
+    assert cfg.paper_telegram_allowed_user_ids == frozenset({"77"}) and cfg.telegram_allowed_user_ids == frozenset({"42"})
+    assert "SECRET" not in repr(cfg)
+    assert not Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "t"}).paper_telegram  # no chat to send to
+    both = Config.from_env({"KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77", "KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS": "1, 2"})
+    assert both.paper_telegram_allowed_user_ids == frozenset({"1", "2"})
