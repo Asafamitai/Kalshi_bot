@@ -392,11 +392,11 @@ def test_long_passes_are_split_under_telegrams_limit(mk, tmp_path):
 
 
 def test_paper_bot_config():
-    cfg = Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "SECRET", "KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77",
+    cfg = Config.from_env({"KALSHI_LADDER_AUTO_BOT_TOKEN": "SECRET", "KALSHI_LADDER_AUTO_BOT_CHAT_ID": "77",
                            "KALSHI_LADDER_BOT_CHAT_ID": "42"})
     assert cfg.paper_telegram and cfg.paper_telegram_chat_id == "77"
     assert cfg.paper_telegram_allowed_user_ids == frozenset({"77"}) and cfg.telegram_allowed_user_ids == frozenset({"42"})
     assert "SECRET" not in repr(cfg)
-    assert not Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "t"}).paper_telegram  # no chat to send to
-    both = Config.from_env({"KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77", "KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS": "1, 2"})
+    assert not Config.from_env({"KALSHI_LADDER_AUTO_BOT_TOKEN": "t"}).paper_telegram  # no chat to send to
+    both = Config.from_env({"KALSHI_LADDER_AUTO_BOT_CHAT_ID": "77", "KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS": "1, 2"})
     assert both.paper_telegram_allowed_user_ids == frozenset({"1", "2"})

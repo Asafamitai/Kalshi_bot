@@ -167,13 +167,13 @@ one message, in Hebrew: each trade bought (contracts, price, cost, saving,
 and whether it also passed the alert filters, or the locked minimum for a
 pair), each trade closed with its P&L, and both books' cash. A long pass is
 split under Telegram's message limit. `/paper` there gives the report; any
-other message gets a short help. Only `KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS`
+other message gets a short help. Only `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS`
 (default: its chat id) are answered.
 
 To connect one: create a bot with @BotFather, set
-`KALSHI_LADDER_PAPER_BOT_TOKEN`, write to the new bot once, run
+`KALSHI_LADDER_AUTO_BOT_TOKEN`, write to the new bot once, run
 `python -m kalshi_bot telegram-chats --paper` to find your chat id, set
-`KALSHI_LADDER_PAPER_BOT_CHAT_ID`, and restart. Without it nothing changes:
+`KALSHI_LADDER_AUTO_BOT_CHAT_ID`, and restart. Without it nothing changes:
 paper trading runs silently and `/paper` works on the alert bot.
 
 ### Running in a Claude Code cloud session
@@ -193,8 +193,8 @@ belongs to another project in the same environment is never picked up.
 |---|---|---|
 | `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`) | – | Only for buying. RSA or Ed25519. |
 | `KALSHI_LADDER_BOT_TOKEN`, `KALSHI_LADDER_BOT_CHAT_ID` | – | Without them, alerts go to the log. |
-| `KALSHI_LADDER_PAPER_BOT_TOKEN`, `KALSHI_LADDER_PAPER_BOT_CHAT_ID` | – | Paper trading's own bot (optional). |
-| `KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS` | its chat id | Who that bot answers. |
+| `KALSHI_LADDER_AUTO_BOT_TOKEN`, `KALSHI_LADDER_AUTO_BOT_CHAT_ID` | – | Paper trading's own bot (optional). |
+| `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS` | its chat id | Who that bot answers. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
 | `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |
 | `MAX_SPREAD` | 0.10 | Widest dominated-rung book whose mid still counts. |

@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
     chats = sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     chats.add_argument("--paper", action="store_true",
-                       help="the paper trading bot instead, to find KALSHI_LADDER_PAPER_BOT_CHAT_ID")
+                       help="the paper trading bot instead, to find KALSHI_LADDER_AUTO_BOT_CHAT_ID")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "paper":
         print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "telegram-chats":
-        name, token = ("KALSHI_LADDER_PAPER_BOT_TOKEN", cfg.paper_telegram_token) if args.paper \
+        name, token = ("KALSHI_LADDER_AUTO_BOT_TOKEN", cfg.paper_telegram_token) if args.paper \
             else ("KALSHI_LADDER_BOT_TOKEN", cfg.telegram_token)
         if not token:
             parser.error(f"{name} is not set")
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         paper_telegram = None
         if cfg.paper_telegram and cfg.paper_telegram_token == cfg.telegram_token:
             # Two readers of one bot's updates make Telegram refuse both.
-            log.warning("KALSHI_LADDER_PAPER_BOT_TOKEN is the alert bot's token: paper trading needs a bot of its own")
+            log.warning("KALSHI_LADDER_AUTO_BOT_TOKEN is the alert bot's token: paper trading needs a bot of its own")
         elif cfg.paper_telegram:
             paper_telegram = Telegram(cfg.paper_telegram_token)
         store = Store(cfg.db_path)
