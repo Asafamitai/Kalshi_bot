@@ -44,6 +44,12 @@ class Config:
     cooldown_hours: float = 12
     max_alerts_per_pass: int = 10
     buy_sizes: tuple[int, ...] = (10, 50)
+    # Paper trading: each strategy's own bankroll, what one trade may cost, and
+    # the share of the maximum profit at which the single-contract book sells.
+    paper_trading: bool = True
+    paper_bankroll: Decimal = Decimal("500")
+    paper_max_trade: Decimal = Decimal("15")
+    paper_take_profit: Decimal = Decimal("0.80")
     db_path: str = "kalshi_bot.sqlite3"
 
     @classmethod
@@ -81,6 +87,10 @@ class Config:
             cooldown_hours=float(env.get("COOLDOWN_HOURS") or d.cooldown_hours),
             max_alerts_per_pass=int(env.get("MAX_ALERTS_PER_PASS") or d.max_alerts_per_pass),
             buy_sizes=tuple(int(x) for x in (env.get("BUY_SIZES") or "10,50").split(",") if x.strip()),
+            paper_trading=(env.get("PAPER_TRADING") or "on").strip().lower() not in ("0", "off", "false", "no"),
+            paper_bankroll=num("PAPER_BANKROLL", d.paper_bankroll),
+            paper_max_trade=num("PAPER_MAX_TRADE", d.paper_max_trade),
+            paper_take_profit=num("PAPER_TAKE_PROFIT", d.paper_take_profit),
             db_path=env.get("DB_PATH") or d.db_path,
         )
 
