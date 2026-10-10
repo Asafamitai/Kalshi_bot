@@ -82,8 +82,8 @@ class Config:
             pem = pem.replace("\\n", "\n")
         chat_id = env.get("KALSHI_LADDER_BOT_CHAT_ID") or None
         allowed = _users(env, "KALSHI_LADDER_BOT_ALLOWED_USER_IDS", chat_id)
-        paper_chat_id = env.get("KALSHI_LADDER_PAPER_BOT_CHAT_ID") or None
-        paper_allowed = _users(env, "KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS", paper_chat_id)
+        paper_chat_id = env.get("KALSHI_LADDER_AUTO_BOT_CHAT_ID") or None
+        paper_allowed = _users(env, "KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS", paper_chat_id)
         d = cls()
         num = lambda name, default: Decimal(env.get(name) or default)  # noqa: E731
         return cls(
@@ -112,7 +112,7 @@ class Config:
             paper_max_price=num("PAPER_MAX_PRICE", d.paper_max_price),
             paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
             paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
-            paper_telegram_token=env.get("KALSHI_LADDER_PAPER_BOT_TOKEN") or None,
+            paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),
             db_path=env.get("DB_PATH") or d.db_path,
