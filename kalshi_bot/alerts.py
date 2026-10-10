@@ -27,8 +27,8 @@ def due(v: Violation, store: Store, cfg: Config, now: float) -> bool:
     return last is None or now - last >= cfg.cooldown_hours * 3600
 
 
-def confirm(client: KalshiClient, candidates: list[Violation], cfg: Config) -> list[Violation]:
-    """Re-read both rungs of every candidate; keep what still holds, at today's prices.
+def reread(client: KalshiClient, candidates: list[Violation], cfg: Config) -> list[Violation]:
+    """Re-read both rungs of every candidate; keep what still contradicts, at today's prices.
 
     A contradiction that is gone a few seconds later was a flicker, not an option.
     """
@@ -45,9 +45,14 @@ def confirm(client: KalshiClient, candidates: list[Violation], cfg: Config) -> l
         if safer is None or dominated is None or not dominated.is_priced(v.side, cfg.max_spread):
             continue
         again = Violation(v.side, safer, dominated)
-        if again.saving >= cfg.min_saving and alertable(again, cfg):
+        if again.saving >= cfg.min_saving:
             kept.append(again)
     return kept
+
+
+def confirm(client: KalshiClient, candidates: list[Violation], cfg: Config) -> list[Violation]:
+    """The candidates that still hold on a second read and still pass the alert filters."""
+    return [v for v in reread(client, candidates, cfg) if alertable(v, cfg)]
 
 
 def pick(violations: list[Violation], store: Store, cfg: Config, client: KalshiClient, now: float) -> list[Violation]:

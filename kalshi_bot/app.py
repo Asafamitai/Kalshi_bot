@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from html import escape
 
-from . import alerts, episodes, trader
+from . import alerts, episodes, paper, trader
 from .config import Config
 from .format import alert_text, buy_buttons, console_line
 from .kalshi import KalshiClient
@@ -24,7 +25,8 @@ HELP = (
     "/status · מצב הסריקה והמסחר\n"
     "/trading on · הפעלת קנייה אמיתית בלחיצה\n"
     "/trading off · כיבוי (ברירת המחדל): לחיצה רק מראה מה הייתה קונה\n"
-    "/report · כמה זמן סתירות שורדות"
+    "/report · כמה זמן סתירות שורדות ואיזו מדרגה זזה כשנסגרו\n"
+    "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
 )
 
 
@@ -49,11 +51,12 @@ class App:
         """One pass: read everything, track episodes, alert on the best new options."""
         started = self.clock()
         markets = list(self.scan_client.iter_open_markets())
+        by_ticker = {m["ticker"]: m for m in markets}
         ladders = build_ladders(markets)
         found = find_violations(markets, self.cfg.min_saving, self.cfg.max_spread)
         now = self.clock()
         qualifying = {v.key for v in found if alerts.alertable(v, self.cfg)}
-        opened, closed = episodes.update(self.store, found, qualifying, now)
+        opened, closed = episodes.update(self.store, found, qualifying, now, by_ticker)
 
         picked = alerts.pick(found, self.store, self.cfg, self.scan_client, now)
         sent = 0
@@ -67,10 +70,18 @@ class App:
             self.store.mark_sent(alerts.option_key(v), now)
             sent += 1
 
+        papered = ""
+        if self.cfg.paper_trading:
+            try:
+                p = paper.step(self.store, self.scan_client, self.cfg, found, by_ticker, now)
+                papered = f"; paper: {p['opened']} opened, {p['sold']} sold, {p['settled']} settled"
+            except Exception:
+                log.exception("paper trading failed")
+
         self.store.log_scan(at=now, seconds=now - started, markets=len(markets), ladders=len(ladders),
                             violations=len(found), alertable=len(qualifying), sent=sent)
-        log.info("scanned %d markets in %.0fs: %d violations (%d new, %d closed), %d alertable, %d sent",
-                 len(markets), now - started, len(found), opened, closed, len(qualifying), sent)
+        log.info("scanned %d markets in %.0fs: %d violations (%d new, %d closed), %d alertable, %d sent%s",
+                 len(markets), now - started, len(found), opened, closed, len(qualifying), sent, papered)
         return picked
 
     def send_alert(self, v: Violation) -> None:
@@ -102,7 +113,9 @@ class App:
         elif command == "/status":
             reply = self.status_text()
         elif command == "/report":
-            reply = f"<pre>{episodes.report(self.store, now=self.clock())}</pre>"
+            reply = f"<pre>{escape(episodes.report(self.store, now=self.clock()))}</pre>"
+        elif command == "/paper":
+            reply = f"<pre>{escape(paper.report(self.store, self.cfg))}</pre>"
         else:
             reply = HELP
         self.telegram.send(self.cfg.telegram_chat_id, reply)

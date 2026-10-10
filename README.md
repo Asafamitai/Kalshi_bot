@@ -60,7 +60,8 @@ cp .env.example .env        # fill in what you need; .env is git-ignored
 
 python -m kalshi_bot scan            # one pass over every open market, printed
 python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
-python -m kalshi_bot report          # how long contradictions survived
+python -m kalshi_bot report          # how long contradictions survived, and which rung moved
+python -m kalshi_bot paper           # the paper trading books
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
 ```
@@ -72,6 +73,16 @@ python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADD
 Every contradiction of at least `MIN_SAVING` against a real book is tracked
 as an **episode**, from the first scan that sees it to the first that
 doesn't (`report`, or `/report` in Telegram).
+
+Each episode also records **which rung moved to close it**: the safer ask
+rising, or the dominated rung's mid falling (measured from when that pair of
+rungs started to contradict). The rule only says one of the two prices is
+wrong. If alertable contradictions mostly close by the safer ask rising, the
+safer contract was the cheap one and buying it had an edge; if they mostly
+close by the dominated mid falling, that rung was the dear one and buying the
+safer contract gained nothing. `report` gives the shares and the mean moves.
+Episodes whose rung stopped trading count as expired, and those that closed
+because a book emptied or widened, with neither price moving, as "book".
 
 Only the best of them become **alerts**:
 
@@ -110,6 +121,36 @@ Trading is **off by default**: a tap then says what it would have bought.
 key). Only users in `KALSHI_LADDER_BOT_ALLOWED_USER_IDS` (default: `KALSHI_LADDER_BOT_CHAT_ID`)
 can press buttons or send commands; anyone else gets silence.
 
+### Paper trading
+
+On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
+Every pass, two books, each with its own `PAPER_BANKROLL`, trade what the scan
+found:
+
+- **single** buys the safer contract of every contradiction that passes the
+  alert filters and has a bid behind its ask, up to `PAPER_MAX_TRADE` dollars including the fee. It sells
+  once its bid holds `PAPER_TAKE_PROFIT` (80%) of the maximum profit and can
+  take the whole position, and otherwise holds to settlement. It wins or
+  loses with the outcome.
+- **pair** trades only when the safer ask is below the dominated rung's bid,
+  and the pair is profitable after fees. It buys the safer contract and the
+  other side of the dominated one, which together pay at least 1 in every
+  outcome, so the profit is known at entry. Held to settlement. No price band:
+  the hedge leg is cheap by design.
+
+Both hold at most one trade per event at a time (the two sides of one
+inversion are the same bet), only buy with the cash their bankroll has left,
+and only after a second read of both rungs. Fills are assumed at that read's
+ask, up to the depth shown there, plus the taker fee. Sales are at the bid,
+minus the fee. Settlement pays 1 or 0. Real orders would fill no better.
+Open legs are marked at their bid every pass, and legs whose market stopped
+trading are settled once Kalshi reports a result.
+
+`paper` (or `/paper` in Telegram) shows each book: trades, cash, realized
+P&L, open positions at the bid (or the locked minimum for pairs), how the
+single book did on the trades where a pair was also available, and the latest
+trades.
+
 ### Running in a Claude Code cloud session
 
 `./run.sh` restarts the bot whenever it exits. A background command in a
@@ -136,6 +177,10 @@ belongs to another project in the same environment is never picked up.
 | `COOLDOWN_HOURS` | 12 | Per option. |
 | `MAX_ALERTS_PER_PASS` | 10 | |
 | `BUY_SIZES` | 10,50 | Buttons, plus "all". |
+| `PAPER_TRADING` | on | `off` to stop paper trading. |
+| `PAPER_BANKROLL` | 500 | Dollars, per book. |
+| `PAPER_MAX_TRADE` | 15 | Dollars per trade, fees included. |
+| `PAPER_TAKE_PROFIT` | 0.80 | Share of the maximum profit at which the single book sells. |
 
 ## Tests
 

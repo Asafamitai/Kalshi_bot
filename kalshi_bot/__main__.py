@@ -1,4 +1,5 @@
-"""Command line: `scan` once and print, `run` the bot, `report` on how long contradictions last."""
+"""Command line: `scan` once and print, `run` the bot, `report` on how long contradictions last,
+`paper` on what paper trading would have made."""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ import argparse
 import fcntl
 import logging
 
-from . import alerts, episodes
+from . import alerts, episodes, paper
 from .app import App
 from .config import Config, load_dotenv
 from .format import console_line
@@ -52,6 +53,8 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("run", help="scan every SCAN_INTERVAL_SECONDS and alert on Telegram")
     rep = sub.add_parser("report", help="how long contradictions survived")
     rep.add_argument("--hours", type=float, default=24 * 7)
+    pap = sub.add_parser("paper", help="the paper trading books: single contract vs locked pair")
+    pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
     sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     args = parser.parse_args(argv)
 
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> None:
         scan(cfg)
     elif args.command == "report":
         print(episodes.report(Store(cfg.db_path), since_hours=args.hours))
+    elif args.command == "paper":
+        print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "telegram-chats":
         if not cfg.telegram_token:
             parser.error("KALSHI_LADDER_BOT_TOKEN is not set")
@@ -79,9 +84,9 @@ def main(argv: list[str] | None = None) -> None:
             telegram = Telegram(cfg.telegram_token)
         store = Store(cfg.db_path)
         logging.getLogger("kalshi_bot").info(
-            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, telegram %s",
+            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, paper %s, telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
-            "on" if store.trading_on else "off", "on" if telegram else "off",
+            "on" if store.trading_on else "off", "on" if cfg.paper_trading else "off", "on" if telegram else "off",
         )
         App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram).run()
 
