@@ -1,18 +1,18 @@
-"""One-tap buy: re-check both rungs against fresh quotes, then buy the safer one."""
+"""One tap, one order: re-read both rungs, check every guard, then buy the safer contract."""
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
 import requests
 
 from .config import Config
-from .format import cents, price
+from .fees import order_cost
+from .format import cents, price, qty
 from .kalshi import KalshiClient, KalshiError
-from .ladder import Rung, Violation, to_decimal
-from .store import Alert
+from .ladder import Rung, Violation
+from .store import Alert, Store
 
 
 @dataclass(frozen=True)
@@ -22,10 +22,6 @@ class Outcome:
     violation: Violation | None = None
 
 
-def contracts_for(budget: Decimal, ask: Decimal) -> int:
-    return int(budget // ask) if ask > 0 else 0
-
-
 def recheck(
     client: KalshiClient, alert: Alert, min_saving: Decimal, max_spread: Decimal
 ) -> tuple[Violation | None, str | None]:
@@ -33,60 +29,64 @@ def recheck(
     markets = {m["ticker"]: m for m in client.get_markets([alert.safer, alert.dominated])}
     missing = [t for t in (alert.safer, alert.dominated) if t not in markets]
     if missing:
-        return None, f"market not found: {', '.join(missing)}"
+        return None, f"השוק לא נמצא: {', '.join(missing)}"
     closed = [t for t, m in markets.items() if m.get("status") != "active"]
     if closed:
-        return None, f"no longer trading: {', '.join(closed)}"
+        return None, f"השוק כבר לא נסחר: {', '.join(closed)}"
     safer = Rung.from_market(markets[alert.safer])
     dominated = Rung.from_market(markets[alert.dominated])
     v = Violation(alert.side, safer, dominated)
     if not dominated.is_priced(alert.side, max_spread):
-        return v, f"{dominated.ticker} no longer has a real price to compare against"
+        return v, "לחוזה היקר כבר אין מחיר אמיתי להשוות אליו"
     if not v.buyable:
-        return v, f"empty book on {', '.join(v.empty_books)}"
+        return v, f"ספר ריק ב-{', '.join(v.empty_books)}"
     if v.saving < min_saving:
-        return v, f"the contradiction is gone (saving now {cents(v.saving)})"
+        return v, f"הסתירה נסגרה (החיסכון עכשיו {cents(v.saving)})"
     return v, None
 
 
-def buy(client: KalshiClient, alert: Alert, cfg: Config) -> Outcome:
+def buy(client: KalshiClient, store: Store, alert: Alert, choice: str, cfg: Config) -> Outcome:
     v, problem = recheck(client, alert, cfg.min_saving, cfg.max_spread)
     if problem:
-        return Outcome("refused", f"Not bought: {problem}.", v)
+        return Outcome("refused", f"לא נקנה: {problem}.", v)
     if v.ask > alert.ask:
         # Never pay more than the price the button showed.
-        return Outcome(
-            "repriced",
-            f"Not bought: the ask moved from {price(alert.ask)} to {price(v.ask)}. Fresh alert below.",
-            v,
-        )
-    count = contracts_for(cfg.budget, v.ask)
+        return Outcome("repriced", f"לא נקנה: ה-ask עלה מ-{price(alert.ask)} ל-{price(v.ask)}. התראה מעודכנת למטה.", v)
+    count = int(v.ask_size) if choice == "all" else int(choice)
     if count < 1:
-        return Outcome("refused", f"Not bought: budget ${cfg.budget} buys less than one contract.", v)
-    what = f"{count} {v.side.upper()} {v.safer.ticker} @ {price(v.ask)}"
-    if not cfg.live_trading:
-        return Outcome("dry_run", f"Dry run (LIVE_TRADING is off): would buy {what}, saving {cents(v.saving)}.", v)
+        return Outcome("refused", "לא נקנה: אין עומק ב-ask.", v)
+    cost = order_cost(v.ask, count)
+    what = f"{count} {v.side.upper()} {v.safer.ticker} ב-{price(v.ask)} (עד ${cost:.2f} כולל עמלה)"
+    if not store.trading_on:
+        return Outcome("dry_run", f"המסחר כבוי (/trading on): הייתי קונה {what}.", v)
+    if not client.can_trade:
+        return Outcome("refused", "לא נקנה: אין מפתח Kalshi בסביבה.", v)
 
     try:
-        order = client.buy_ioc(
-            v.safer.ticker, v.side, count, v.ask, client_order_id=f"ladder-{alert.id}-{uuid.uuid4().hex[:12]}"
-        )
+        cash = client.balance()
+    except (KalshiError, requests.RequestException):
+        cash = None  # an unreadable balance is no reason to block; Kalshi refuses if it's short
+    if cash is not None and cost > cash:
+        return Outcome("refused", f"לא נקנה: היתרה ${cash:.2f} קטנה מהעלות ${cost:.2f}.", v)
+
+    # Derived from the alert and the choice, so a retry can never buy twice.
+    client_order_id = f"lk-{alert.id}-{choice}"
+    try:
+        result = client.buy(v.safer.ticker, v.side, count, v.ask, client_order_id)
     except KalshiError as e:
+        store.log_order(alert.id, v.safer.ticker, v.side, count, v.ask, client_order_id, {"error": str(e)})
         if e.status < 500:
-            return Outcome("rejected", f"Kalshi rejected the order for {what}: {e}", v)
-        return Outcome("unknown", f"The order for {what} may or may not have gone through ({e}). "
-                       "Check your Kalshi positions; this button is now disabled.", v)
+            return Outcome("rejected", f"Kalshi דחתה את ההזמנה ({what}): {e}", v)
+        return Outcome("unknown", f"לא ברור אם ההזמנה ({what}) עברה: {e}. בדוק את הפוזיציות ב-Kalshi.", v)
     except requests.RequestException as e:
-        return Outcome("unknown", f"No answer from Kalshi for the order for {what} ({e}). "
-                       "Check your Kalshi positions; this button is now disabled.", v)
-    filled = to_decimal(order.get("fill_count_fp"))
+        store.log_order(alert.id, v.safer.ticker, v.side, count, v.ask, client_order_id, {"error": str(e)})
+        return Outcome("unknown", f"אין תשובה מ-Kalshi על ההזמנה ({what}): {e}. בדוק את הפוזיציות ב-Kalshi.", v)
+    store.log_order(alert.id, v.safer.ticker, v.side, count, v.ask, client_order_id, result)
+
+    if result.get("already"):
+        return Outcome("unknown", "ההזמנה הזו כבר נשלחה קודם; בדוק את הפוזיציות ב-Kalshi.", v)
+    filled = result["filled"]
     if filled <= 0:
-        return Outcome("unfilled", f"Order for {what} did not fill; nothing bought.", v)
-    cost = to_decimal(order.get("taker_fill_cost_dollars"))
-    fees = to_decimal(order.get("taker_fees_dollars"))
-    return Outcome(
-        "bought",
-        f"Bought {filled.normalize():f} of {count} {v.side.upper()} {v.safer.ticker} "
-        f"for ${cost:.2f} + ${fees:.2f} fees.",
-        v,
-    )
+        return Outcome("unfilled", f"ההזמנה לא התמלאה ({what}); לא נקנה כלום.", v)
+    avg = result.get("avg_price") or v.ask
+    return Outcome("bought", f"נקנו {qty(filled)} מתוך {count} {v.side.upper()} {v.safer.ticker} במחיר ממוצע {price(avg)}.", v)

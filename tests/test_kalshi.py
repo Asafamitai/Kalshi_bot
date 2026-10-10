@@ -63,24 +63,42 @@ def test_iter_open_markets_follows_cursor():
     assert session.calls[1]["params"]["cursor"] == "c1"
 
 
-def test_buy_ioc_body_and_signed():
+def test_buy_no_goes_to_v2_as_a_yes_ask():
     key = ed25519.Ed25519PrivateKey.generate()
-    session = FakeSession([FakeResponse(201, {"order": {"fill_count_fp": "11.00"}})])
+    session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "11.00", "remaining_count": "0.00",
+                                              "average_fill_price": "0.1400", "average_fee_paid": "0.0090"})])
     client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
-    order = client.buy_ioc("APP-T195", "no", 11, Decimal("0.86"), "ladder-1-x")
-    assert order == {"fill_count_fp": "11.00"}
+    result = client.buy("APP-T195", "no", 11, Decimal("0.86"), "lk-1-10")
     call = session.calls[0]
-    assert call["method"] == "POST" and call["url"].endswith("/portfolio/orders")
+    assert call["method"] == "POST" and call["url"].endswith("/trade-api/v2/portfolio/events/orders")
     assert call["json"] == {
         "ticker": "APP-T195",
-        "action": "buy",
-        "side": "no",
-        "count": 11,
-        "no_price_dollars": "0.8600",
+        "client_order_id": "lk-1-10",
+        "side": "ask",  # buying NO at 0.86 is selling YES at 0.14
+        "count": "11.00",
+        "price": "0.1400",
         "time_in_force": "immediate_or_cancel",
-        "client_order_id": "ladder-1-x",
+        "self_trade_prevention_type": "taker_at_cross",
     }
     assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
+    assert result["filled"] == Decimal("11.00") and result["avg_price"] == Decimal("0.8600")
+    assert not result["already"]
+
+
+def test_buy_yes_is_a_bid_at_the_same_price():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "0.00", "remaining_count": "0.00"})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    client.buy("APP-T175", "yes", 3, Decimal("0.40"), "lk-2-all")
+    assert session.calls[0]["json"]["side"] == "bid"
+    assert session.calls[0]["json"]["price"] == "0.4000"
+
+
+def test_duplicate_client_order_id_means_already_sent():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(409, '{"error":{"code":"duplicate_client_order_id"}}')])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    assert client.buy("APP-T195", "no", 1, Decimal("0.86"), "lk-1-10")["already"] is True
 
 
 def test_order_is_not_retried_on_server_error():
@@ -88,10 +106,17 @@ def test_order_is_not_retried_on_server_error():
     session = FakeSession([FakeResponse(503, "busy")])
     client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
     with pytest.raises(KalshiError):
-        client.buy_ioc("APP-T195", "no", 1, Decimal("0.86"), "id")
+        client.buy("APP-T195", "no", 1, Decimal("0.86"), "id")
     assert len(session.calls) == 1
 
 
 def test_buy_without_key_refuses():
     with pytest.raises(RuntimeError):
-        KalshiClient("https://example.test").buy_ioc("T", "no", 1, Decimal("0.5"), "id")
+        KalshiClient("https://example.test").buy("T", "no", 1, Decimal("0.5"), "id")
+
+
+def test_get_markets_batches_tickers():
+    session = FakeSession([FakeResponse(200, {"markets": [{"ticker": "A"}]}), FakeResponse(200, {"markets": []})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    client.get_markets([f"T{i}" for i in range(60)])
+    assert [len(c["params"]["tickers"].split(",")) for c in session.calls] == [50, 10]

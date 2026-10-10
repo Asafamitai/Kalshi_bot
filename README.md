@@ -33,9 +33,8 @@ NO on "above 195" offered at 0.86 while NO on "above 175" was at 0.98.
   and no buy button.
 - **The rule doesn't say which quote is wrong**, only that one of them is.
   Buying the safer contract is right *relative* to the dearer one; it isn't
-  necessarily cheap in absolute terms. When the safer ask is even below the
-  dominated rung's *bid*, the alert says so: buying one and selling the other
-  would lock the difference in.
+  necessarily cheap in absolute terms. Each alert also prices the pair
+  (below), whose worst case is known.
 
 ### What counts as a ladder
 
@@ -59,51 +58,84 @@ ways into the same contradiction.
 pip install -r requirements.txt
 cp .env.example .env        # fill in what you need; .env is git-ignored
 
-python -m kalshi_bot scan                    # one pass over every open market, printed
-python -m kalshi_bot scan --min-saving 0.01 --max-spread 0.05
-python -m kalshi_bot run                     # every 5 minutes, alerts to Telegram
+python -m kalshi_bot scan            # one pass over every open market, printed
+python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
+python -m kalshi_bot report          # how long contradictions survived
+python -m kalshi_bot telegram-chats  # who wrote to the bot, to find TELEGRAM_CHAT_ID
+./run.sh                             # `run`, restarted whenever it exits (bot.log)
 ```
 
-`scan` needs no keys: Kalshi market data is public. Every finding from every
-scan is logged to the `findings` table in `DB_PATH` (SQLite), so you can see
-afterwards how often contradictions appear, how big they are and how long
-they last.
+`scan` needs no keys: Kalshi market data is public.
+
+### What gets tracked, and what gets a message
+
+Every contradiction of at least `MIN_SAVING` against a real book is tracked
+as an **episode**, from the first scan that sees it to the first that
+doesn't (`report`, or `/report` in Telegram).
+
+Only the best of them become **alerts**:
+
+- saving **after the taker fee** (`0.07 * p * (1 - p)` per contract) of at
+  least `MIN_NET_SAVING`;
+- buy price between `MIN_PRICE` and `MAX_PRICE` (below is lottery tickets,
+  above is pennies against dollars);
+- at least `MIN_DEPTH` contracts at the ask and `MIN_VOLUME_24H` traded in a day;
+- the same option (contract and side) at most once per `COOLDOWN_HOURS`, kept
+  in the database so a restart doesn't repeat it;
+- at most `MAX_ALERTS_PER_PASS` per pass, best net saving first;
+- a **second read** of both rungs just before sending; anything gone was a flicker.
+
+Each alert, in Hebrew, shows the pair too: the safer contract plus the other
+side of the dearer one pay 1 everywhere and 2 between the strikes, so its
+worst case is known up front ("locked" when that is positive after fees).
 
 ### Buying
 
-`run` sends each buyable violation with a button such as **Buy 11 NO @ 0.86**
-(contracts = `floor(BUY_BUDGET_USD / ask)`). A tap:
+Buttons under an alert buy `BUY_SIZES` contracts (default 10 and 50) or all
+the depth at the ask, each labelled with its cost including fees. A tap:
 
-1. re-fetches both rungs;
-2. refuses if either market stopped trading, the dominated rung no longer has
-   a real price, the safer rung's book is empty, or the saving fell below
-   `MIN_SAVING`;
-3. refuses if the ask rose above the price on the button, and sends a fresh
+1. re-reads both rungs, and refuses if either market stopped trading, the
+   dominated rung no longer has a real price, the safer rung's book is empty,
+   or the contradiction closed;
+2. refuses if the ask rose above the price on the button, and sends a fresh
    alert at the new price instead;
-4. otherwise places an immediate-or-cancel limit buy at the current ask, so
-   nothing rests on the book.
+3. refuses if the cash balance can't cover the cost;
+4. otherwise sends one immediate-or-cancel limit order at the current ask
+   through Kalshi's V2 order endpoint (`POST /portfolio/events/orders`; the
+   legacy `/portfolio/orders` answers 410). Its client order id comes from
+   the alert and the size, so a retry can never buy twice.
 
-`LIVE_TRADING` is **off by default**: taps then report what they would have
-bought. Only users in `TELEGRAM_ALLOWED_USER_IDS` (default: `TELEGRAM_CHAT_ID`)
-can press buttons. Point `KALSHI_API_BASE` at the demo exchange to try real
-orders without real money.
+Trading is **off by default**: a tap then says what it would have bought.
+`/trading on` and `/trading off` in Telegram switch it (on needs a Kalshi
+key). Only users in `TELEGRAM_ALLOWED_USER_IDS` (default: `TELEGRAM_CHAT_ID`)
+can press buttons or send commands; anyone else gets silence.
 
-Fees are not included in the saving shown.
+### Running in a Claude Code cloud session
+
+`./run.sh` restarts the bot whenever it exits. A background command in a
+cloud session is stopped after two hours and on a container restart, so the
+session restarts `./run.sh` when that happens. The bot refuses to start a
+second copy on the same database, and `run.sh` stops a stale one first.
 
 ## Configuration
 
-See [`.env.example`](.env.example). Keys can also come from real environment
-variables, which take precedence over `.env`.
+See [`.env.example`](.env.example). Real environment variables take
+precedence over `.env`. The `LADDER_*` and `KALSHI_ACCOUNTS_JSON` names from
+ladder-coherence work too.
 
 | Variable | Default | |
 |---|---|---|
-| `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` or `KALSHI_PRIVATE_KEY_PATH` | – | Only for buying. RSA or Ed25519 keys. |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | – | Without them, `run` logs alerts to the console. |
+| `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`), or `KALSHI_ACCOUNTS_JSON` + `LADDER_KALSHI_ACCOUNT` | – | Only for buying. RSA or Ed25519. |
+| `TELEGRAM_BOT_TOKEN` / `LADDER_TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` / `LADDER_TELEGRAM_CHAT_ID` | – | Without them, alerts go to the log. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
-| `MIN_SAVING` | 0.02 | Dollars, against the dominated mid. |
+| `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |
 | `MAX_SPREAD` | 0.10 | Widest dominated-rung book whose mid still counts. |
-| `BUY_BUDGET_USD` | 10 | Per tap. |
-| `LIVE_TRADING` | 0 | Set to 1 to place real orders. |
+| `MIN_NET_SAVING` | 0.01 | Alerted: saving after the fee. |
+| `MIN_PRICE`, `MAX_PRICE` | 0.30, 0.90 | Buy price band. |
+| `MIN_DEPTH`, `MIN_VOLUME_24H` | 50, 50 | Contracts. |
+| `COOLDOWN_HOURS` | 12 | Per option. |
+| `MAX_ALERTS_PER_PASS` | 10 | |
+| `BUY_SIZES` | 10,50 | Buttons, plus "all". |
 
 ## Tests
 

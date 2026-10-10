@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -23,8 +24,28 @@ def load_dotenv(path: str | Path = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-def _flag(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+def _first(env, *names: str) -> str | None:
+    for name in names:
+        if env.get(name):
+            return env[name]
+    return None
+
+
+def _account_from_json(env) -> tuple[str | None, str | None]:
+    """(key_id, pem) from KALSHI_ACCOUNTS_JSON, the ladder-coherence format:
+    a list of {name, key_id, private_key_pem}, picked by LADDER_KALSHI_ACCOUNT (default "main")."""
+    raw = env.get("KALSHI_ACCOUNTS_JSON")
+    if not raw:
+        return None, None
+    try:
+        accounts = json.loads(raw)
+    except ValueError:
+        return None, None
+    want = env.get("LADDER_KALSHI_ACCOUNT") or "main"
+    chosen = next((a for a in accounts if a.get("name") == want), accounts[0] if accounts else None)
+    if not chosen:
+        return None, None
+    return chosen.get("key_id"), chosen.get("private_key_pem")
 
 
 @dataclass(frozen=True)
@@ -36,39 +57,58 @@ class Config:
     telegram_chat_id: str | None = None
     telegram_allowed_user_ids: frozenset[str] = frozenset()
     scan_interval: int = 300
-    min_saving: Decimal = Decimal("0.02")
+    # Detection: every contradiction at least this big against a real book is tracked.
+    min_saving: Decimal = Decimal("0.01")
     max_spread: Decimal = Decimal("0.10")
-    budget: Decimal = Decimal("10")
-    live_trading: bool = False
+    # Alerts: a subset of what is tracked.
+    min_net_saving: Decimal = Decimal("0.01")
+    min_price: Decimal = Decimal("0.30")
+    max_price: Decimal = Decimal("0.90")
+    min_depth: Decimal = Decimal("50")
+    min_volume_24h: Decimal = Decimal("50")
+    cooldown_hours: float = 12
+    max_alerts_per_pass: int = 10
+    buy_sizes: tuple[int, ...] = (10, 50)
     db_path: str = "kalshi_bot.sqlite3"
 
     @classmethod
     def from_env(cls, env=os.environ) -> Config:
+        key_id = env.get("KALSHI_API_KEY_ID")
         pem = env.get("KALSHI_PRIVATE_KEY")
         key_path = env.get("KALSHI_PRIVATE_KEY_PATH")
         if not pem and key_path:
             pem = Path(key_path).expanduser().read_text()
+        if not (key_id and pem):
+            key_id, pem = _account_from_json(env)
         if pem:
             # Env-var UIs often flatten newlines; PEM needs them back.
             pem = pem.replace("\\n", "\n")
-        chat_id = env.get("TELEGRAM_CHAT_ID") or None
+        chat_id = _first(env, "TELEGRAM_CHAT_ID", "LADDER_TELEGRAM_CHAT_ID")
         allowed = {u.strip() for u in (env.get("TELEGRAM_ALLOWED_USER_IDS") or "").split(",") if u.strip()}
         if not allowed and chat_id:
             # In a private chat the chat id is the user's id.
             allowed = {chat_id}
+        d = cls()
+        num = lambda name, default: Decimal(env.get(name) or default)  # noqa: E731
         return cls(
             kalshi_base_url=env.get("KALSHI_API_BASE") or DEFAULT_BASE_URL,
-            kalshi_key_id=env.get("KALSHI_API_KEY_ID") or None,
+            kalshi_key_id=key_id or None,
             kalshi_private_key=pem or None,
-            telegram_token=env.get("TELEGRAM_BOT_TOKEN") or None,
+            telegram_token=_first(env, "TELEGRAM_BOT_TOKEN", "LADDER_TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=chat_id,
             telegram_allowed_user_ids=frozenset(allowed),
-            scan_interval=int(env.get("SCAN_INTERVAL_SECONDS") or 300),
-            min_saving=Decimal(env.get("MIN_SAVING") or "0.02"),
-            max_spread=Decimal(env.get("MAX_SPREAD") or "0.10"),
-            budget=Decimal(env.get("BUY_BUDGET_USD") or "10"),
-            live_trading=_flag(env.get("LIVE_TRADING")),
-            db_path=env.get("DB_PATH") or "kalshi_bot.sqlite3",
+            scan_interval=int(env.get("SCAN_INTERVAL_SECONDS") or d.scan_interval),
+            min_saving=num("MIN_SAVING", d.min_saving),
+            max_spread=num("MAX_SPREAD", d.max_spread),
+            min_net_saving=num("MIN_NET_SAVING", d.min_net_saving),
+            min_price=num("MIN_PRICE", d.min_price),
+            max_price=num("MAX_PRICE", d.max_price),
+            min_depth=num("MIN_DEPTH", d.min_depth),
+            min_volume_24h=num("MIN_VOLUME_24H", d.min_volume_24h),
+            cooldown_hours=float(env.get("COOLDOWN_HOURS") or d.cooldown_hours),
+            max_alerts_per_pass=int(env.get("MAX_ALERTS_PER_PASS") or d.max_alerts_per_pass),
+            buy_sizes=tuple(int(x) for x in (env.get("BUY_SIZES") or "10,50").split(",") if x.strip()),
+            db_path=env.get("DB_PATH") or d.db_path,
         )
 
     def kalshi_client(self) -> KalshiClient:

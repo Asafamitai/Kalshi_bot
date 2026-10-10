@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 DEFAULT_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
+ORDERS_PATH = "/portfolio/events/orders"
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
@@ -100,20 +101,53 @@ class KalshiClient:
                 return
 
     def get_markets(self, tickers: list[str]) -> list[dict]:
-        data = self._request("GET", "/markets", params={"tickers": ",".join(tickers)})
-        return data.get("markets") or []
+        out = []
+        for i in range(0, len(tickers), 50):
+            data = self._request("GET", "/markets", params={"tickers": ",".join(tickers[i : i + 50])})
+            out.extend(data.get("markets") or [])
+        return out
 
-    def buy_ioc(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str) -> dict:
-        """Buy up to `count` contracts at `limit_price` or better; any unfilled rest is cancelled."""
+    def balance(self) -> Decimal | None:
+        """Cash available, in dollars."""
+        data = self._request("GET", "/portfolio/balance", signed=True)
+        value = data.get("balance_dollars")
+        return Decimal(str(value)) if value is not None else None
+
+    def buy(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str) -> dict:
+        """Buy up to `count` at `limit_price` or better; whatever doesn't fill at once is cancelled.
+
+        Goes through the V2 endpoint (the legacy POST /portfolio/orders answers
+        410 since 2026-08-24). V2 quotes only the YES book: buying YES is a bid
+        at p, buying NO at p is an ask (selling YES) at 1 - p.
+        """
         if not self.can_trade:
             raise RuntimeError("Kalshi API key is not configured")
+        book_side, yes_price = ("bid", limit_price) if side == "yes" else ("ask", 1 - limit_price)
         body = {
             "ticker": ticker,
-            "action": "buy",
-            "side": side,
-            "count": count,
-            f"{side}_price_dollars": str(limit_price.quantize(Decimal("0.0001"))),
-            "time_in_force": "immediate_or_cancel",
             "client_order_id": client_order_id,
+            "side": book_side,
+            "count": f"{count:.2f}",
+            "price": str(yes_price.quantize(Decimal("0.0001"))),
+            "time_in_force": "immediate_or_cancel",
+            "self_trade_prevention_type": "taker_at_cross",
         }
-        return self._request("POST", "/portfolio/orders", json=body, signed=True)["order"]
+        try:
+            data = self._request("POST", ORDERS_PATH, json=body, signed=True)
+        except KalshiError as e:
+            text = e.body.lower()
+            if e.status == 409 or "duplicate" in text or "already exists" in text:
+                # Same client_order_id as an earlier attempt: that one went out.
+                return {"already": True, "filled": Decimal(0)}
+            raise
+        avg_yes = data.get("average_fill_price")
+        avg_price = None
+        if avg_yes is not None:
+            avg_price = Decimal(str(avg_yes)) if side == "yes" else 1 - Decimal(str(avg_yes))
+        return {
+            "already": False,
+            "order_id": data.get("order_id"),
+            "filled": Decimal(str(data.get("fill_count") or 0)),
+            "avg_price": avg_price,
+            "avg_fee": Decimal(str(data["average_fee_paid"])) if data.get("average_fee_paid") else None,
+        }

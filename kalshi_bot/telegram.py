@@ -32,11 +32,12 @@ class Telegram:
             raise TelegramError(f"{method}: {data.get('description')}")
         raise AssertionError("unreachable")
 
-    def send(self, chat_id: str, text: str, buttons: list[tuple[str, str]] | None = None) -> dict:
+    def send(self, chat_id: str, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> dict:
+        """`buttons` is rows of (label, callback_data)."""
         params = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
         if buttons:
             params["reply_markup"] = {
-                "inline_keyboard": [[{"text": label, "callback_data": data}] for label, data in buttons]
+                "inline_keyboard": [[{"text": label, "callback_data": data} for label, data in row] for row in buttons]
             }
         return self._call("sendMessage", **params)
 
@@ -46,7 +47,7 @@ class Telegram:
             http_timeout=timeout + 10,
             offset=offset,
             timeout=timeout,
-            allowed_updates=["callback_query"],
+            allowed_updates=["callback_query", "message"],
         )
 
     def answer(self, callback_id: str, text: str = "") -> None:

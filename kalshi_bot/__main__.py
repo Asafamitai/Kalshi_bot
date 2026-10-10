@@ -1,11 +1,12 @@
-"""Command line: `scan` once and print, or `run` the bot with Telegram alerts."""
+"""Command line: `scan` once and print, `run` the bot, `report` on how long contradictions last."""
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
-from decimal import Decimal
 
+from . import alerts, episodes
 from .app import App
 from .config import Config, load_dotenv
 from .format import console_line
@@ -14,27 +15,44 @@ from .store import Store
 from .telegram import Telegram
 
 
-def scan(cfg: Config, min_saving: Decimal, max_spread: Decimal) -> None:
+def scan(cfg: Config) -> None:
     markets = list(cfg.kalshi_client().iter_open_markets())
     ladders = build_ladders(markets)
-    found = find_violations(markets, min_saving, max_spread)
-    Store(cfg.db_path).log_findings(found)
+    found = find_violations(markets, cfg.min_saving, cfg.max_spread)
+    passing = [v for v in found if alerts.alertable(v, cfg)]
     print(
-        f"{len(markets)} open markets, {len(ladders)} ladders "
-        f"({sum(len(l) for l in ladders)} rungs), {len(found)} violations >= {min_saving * 100:g}¢ "
-        f"({sum(v.buyable for v in found)} buyable) against books no wider than {max_spread * 100:g}¢"
+        f"{len(markets)} open markets, {len(ladders)} ladders ({sum(len(l) for l in ladders)} rungs): "
+        f"{len(found)} violations >= {cfg.min_saving * 100:g}c against books <= {cfg.max_spread * 100:g}c wide, "
+        f"{len(passing)} pass the alert filters"
     )
-    for v in found:
+    print("\nPass the alert filters:")
+    for v in sorted(passing, key=lambda v: v.net_saving, reverse=True):
         print(console_line(v))
+    print("\nTracked only:")
+    for v in found:
+        if v not in passing:
+            print(console_line(v))
+
+
+def telegram_chats(cfg: Config) -> None:
+    """Who has written to the bot lately, to find TELEGRAM_CHAT_ID. Stop `run` first:
+    Telegram allows one reader of updates at a time."""
+    for u in Telegram(cfg.telegram_token).updates(None, timeout=0):
+        msg = u.get("message") or (u.get("callback_query") or {}).get("message") or {}
+        chat, sender = msg.get("chat") or {}, msg.get("from") or {}
+        if chat:
+            print(f"chat_id={chat.get('id')}  type={chat.get('type')}  "
+                  f"name={chat.get('title') or chat.get('first_name')}  from_user_id={sender.get('id')}")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m kalshi_bot", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    scan_p = sub.add_parser("scan", help="scan every open market once and print what contradicts")
-    scan_p.add_argument("--min-saving", type=Decimal, help="dollars, e.g. 0.01 (default: MIN_SAVING)")
-    scan_p.add_argument("--max-spread", type=Decimal, help="dollars, e.g. 0.05 (default: MAX_SPREAD)")
+    sub.add_parser("scan", help="scan every open market once and print what contradicts")
     sub.add_parser("run", help="scan every SCAN_INTERVAL_SECONDS and alert on Telegram")
+    rep = sub.add_parser("report", help="how long contradictions survived")
+    rep.add_argument("--hours", type=float, default=24 * 7)
+    sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find TELEGRAM_CHAT_ID")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -42,26 +60,30 @@ def main(argv: list[str] | None = None) -> None:
     cfg = Config.from_env()
 
     if args.command == "scan":
-        scan(
-            cfg,
-            args.min_saving if args.min_saving is not None else cfg.min_saving,
-            args.max_spread if args.max_spread is not None else cfg.max_spread,
+        scan(cfg)
+    elif args.command == "report":
+        print(episodes.report(Store(cfg.db_path), since_hours=args.hours))
+    elif args.command == "telegram-chats":
+        if not cfg.telegram_token:
+            parser.error("TELEGRAM_BOT_TOKEN (or LADDER_TELEGRAM_BOT_TOKEN) is not set")
+        telegram_chats(cfg)
+    else:
+        # One bot per database: a second copy would send every alert twice.
+        lock = open(cfg.db_path + ".lock", "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            parser.exit(1, f"another bot is already running on {cfg.db_path}\n")
+        telegram = None
+        if cfg.telegram_token and cfg.telegram_chat_id:
+            telegram = Telegram(cfg.telegram_token)
+        store = Store(cfg.db_path)
+        logging.getLogger("kalshi_bot").info(
+            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, telegram %s",
+            cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
+            "on" if store.trading_on else "off", "on" if telegram else "off",
         )
-        return
-
-    if cfg.live_trading and not (cfg.kalshi_key_id and cfg.kalshi_private_key):
-        parser.error("LIVE_TRADING is on but KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY are not set")
-    telegram = None
-    if cfg.telegram_token and cfg.telegram_chat_id:
-        telegram = Telegram(cfg.telegram_token)
-    logging.getLogger("kalshi_bot").info(
-        "starting: every %ss, min saving %s, budget $%s, %s",
-        cfg.scan_interval,
-        cfg.min_saving,
-        cfg.budget,
-        "LIVE trading" if cfg.live_trading else "dry run",
-    )
-    App(cfg, Store(cfg.db_path), cfg.kalshi_client(), cfg.kalshi_client(), telegram).run()
+        App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram).run()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
+from .fees import fee_per_contract
+
 ZERO = Decimal(0)
 ONE = Decimal(1)
 
@@ -56,6 +58,7 @@ class Rung:
     no_ask: Decimal
     yes_bid_size: Decimal
     yes_ask_size: Decimal
+    volume_24h: Decimal
     ladder_key: tuple
 
     @classmethod
@@ -90,6 +93,7 @@ class Rung:
             no_ask=to_decimal(m.get("no_ask_dollars")),
             yes_bid_size=to_decimal(m.get("yes_bid_size_fp")),
             yes_ask_size=to_decimal(m.get("yes_ask_size_fp")),
+            volume_24h=to_decimal(m.get("volume_24h_fp")),
             ladder_key=ladder_key,
         )
 
@@ -101,6 +105,10 @@ class Rung:
 
     def mid(self, side: str) -> Decimal:
         return (self.bid(side) + self.ask(side)) / 2
+
+    def bid_size(self, side: str) -> Decimal:
+        # A NO bid is the other face of a YES ask.
+        return self.yes_bid_size if side == "yes" else self.yes_ask_size
 
     def ask_size(self, side: str) -> Decimal:
         # A NO ask is the other face of a YES bid, so it has the YES bid's size.
@@ -148,6 +156,15 @@ class Violation:
         # Measured against the dominated rung's mid, not its ask: an ask in a
         # wide market is a price nobody pays.
         return self.dominated_mid - self.ask
+
+    @property
+    def fee(self) -> Decimal:
+        return fee_per_contract(self.ask)
+
+    @property
+    def net_saving(self) -> Decimal:
+        """The saving left after the taker fee on the contract bought."""
+        return self.saving - self.fee
 
     @property
     def bid_through(self) -> bool:

@@ -13,6 +13,7 @@ def market(
     strike_type="greater",
     yes_bid_size="100.00",
     yes_ask_size="100.00",
+    volume_24h="500.00",
     status="active",
     close_time="2026-10-31T23:59:00Z",
 ):
@@ -34,6 +35,7 @@ def market(
         "no_ask_dollars": f"{1 - yes_bid:.4f}",
         "yes_bid_size_fp": yes_bid_size,
         "yes_ask_size_fp": yes_ask_size,
+        "volume_24h_fp": volume_24h,
     }
     m["floor_strike" if strike_type.startswith("greater") else "cap_strike"] = strike
     return m
