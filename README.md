@@ -127,11 +127,18 @@ On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
 Every pass, two books, each with its own `PAPER_BANKROLL`, trade what the scan
 found:
 
-- **single** buys the safer contract of every contradiction that passes the
-  alert filters and has a bid behind its ask, up to `PAPER_MAX_TRADE` dollars including the fee. It sells
-  once its bid holds `PAPER_TAKE_PROFIT` (80%) of the maximum profit and can
-  take the whole position, and otherwise holds to settlement. It wins or
-  loses with the outcome.
+- **single** buys the safer contract of every contradiction with a bid
+  behind its ask, at least `MIN_NET_SAVING` after the fee, and its own
+  filters, looser than the alerts' so trades accumulate faster: price
+  `PAPER_MIN_PRICE` to `PAPER_MAX_PRICE` (0.10 to 0.95), at least
+  `PAPER_MIN_DEPTH` (10) contracts at the ask, and `PAPER_MIN_VOLUME_24H` (0)
+  traded in a day. Below 0.10, $15 buys hundreds of contracts and one trade
+  would swamp the rest; volume isn't required because a sale needs a real bid
+  anyway. Each trade records whether it also passed the alert filters, and the
+  report gives those trades' P&L apart. It spends up to `PAPER_MAX_TRADE`
+  dollars including the fee, sells once its bid holds `PAPER_TAKE_PROFIT`
+  (80%) of the maximum profit and can take the whole position, and otherwise
+  holds to settlement. It wins or loses with the outcome.
 - **pair** trades only when the safer ask is below the dominated rung's bid,
   and the pair is profitable after fees. It buys the safer contract and the
   other side of the dominated one, which together pay at least 1 in every
@@ -148,8 +155,8 @@ trading are settled once Kalshi reports a result.
 
 `paper` (or `/paper` in Telegram) shows each book: trades, cash, realized
 P&L, open positions at the bid (or the locked minimum for pairs), how the
-single book did on the trades where a pair was also available, and the latest
-trades.
+single book did on the trades that passed the alert filters and on those where
+a pair was also available, and the latest trades.
 
 ### Running in a Claude Code cloud session
 
@@ -181,6 +188,8 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BANKROLL` | 500 | Dollars, per book. |
 | `PAPER_MAX_TRADE` | 15 | Dollars per trade, fees included. |
 | `PAPER_TAKE_PROFIT` | 0.80 | Share of the maximum profit at which the single book sells. |
+| `PAPER_MIN_PRICE`, `PAPER_MAX_PRICE` | 0.10, 0.95 | Single book's buy price band. |
+| `PAPER_MIN_DEPTH`, `PAPER_MIN_VOLUME_24H` | 10, 0 | Single book, contracts. |
 
 ## Tests
 

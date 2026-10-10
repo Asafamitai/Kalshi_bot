@@ -2,10 +2,12 @@
 
 Two books run side by side, each with its own bankroll, so they can be compared:
 
-- single: the safer contract of every contradiction that passes the alert
-  filters (net saving, price band, depth, volume). Sold once its bid holds
-  PAPER_TAKE_PROFIT of the maximum profit, otherwise held to settlement. It
-  wins or loses with the outcome.
+- single: the safer contract of every contradiction with at least the alerts'
+  net saving and the book's own, looser filters (PAPER_MIN_PRICE to
+  PAPER_MAX_PRICE, PAPER_MIN_DEPTH, PAPER_MIN_VOLUME_24H). Each trade records
+  whether it also passed the alert filters, so the two can be compared. Sold
+  once its bid holds PAPER_TAKE_PROFIT of the maximum profit, otherwise held
+  to settlement. It wins or loses with the outcome.
 - pair: only where the safer ask is below the dominated rung's bid. Buys the
   safer contract and the other side of the dominated one, which together pay
   at least 1 in every outcome, so the profit is known at entry, after fees.
@@ -48,9 +50,18 @@ def locked(v: Violation) -> bool:
     return v.buyable and v.bid_through and pair(v)["worst"] > 0
 
 
+def single_filters(v: Violation, cfg: Config) -> bool:
+    return (
+        v.net_saving >= cfg.min_net_saving
+        and cfg.paper_min_price <= v.ask <= cfg.paper_max_price
+        and v.ask_size >= cfg.paper_min_depth
+        and v.safer.volume_24h >= cfg.paper_min_volume_24h
+    )
+
+
 def wanted(strategy: str, v: Violation, cfg: Config) -> bool:
     # Like the buy buttons: no single contract without a bid behind its ask to sell back to.
-    return v.buyable and alerts.alertable(v, cfg) if strategy == SINGLE else locked(v)
+    return v.buyable and single_filters(v, cfg) if strategy == SINGLE else locked(v)
 
 
 def legs(strategy: str, v: Violation, budget: Decimal) -> list[Leg]:
@@ -156,7 +167,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
                 continue
             if s == PAIR and bought[0][2] <= cost:
                 continue  # the per-order fee rounding ate the lock at this size
-            store.add_paper_trade(s, v, bought, now)
+            store.add_paper_trade(s, v, bought, alerts.alertable(v, cfg), now)
             left -= cost
             busy[s].add(v.safer.event_ticker)
             opened += 1
@@ -202,10 +213,13 @@ def _book(strategy: str, trades: list[dict], left: Decimal) -> list[str]:
         why = Counter(t["exit_reason"] for t in closed)
         out.append(f"  closed {len(closed)}: won {won}, lost {len(closed) - won}, P&L {_signed(sum(pnl))} "
                    f"on ${cost:,.2f} ({sum(pnl) / cost:+.1%}); sold {why['sold']}, settled {why['settled']}")
-        through = [t for t in closed if t["bid_through"]]
-        if strategy == SINGLE and through:
-            out.append(f"  of which bid-through (a pair was locked): {len(through)}, "
-                       f"P&L {_signed(sum(_value(t) - _cost(t) for t in through))}")
+        if strategy == SINGLE:
+            for label, key in (("pass the alert filters", "alertable"), ("bid-through (a pair was locked)",
+                                                                          "bid_through")):
+                some = [t for t in closed if t[key]]
+                if some:
+                    out.append(f"  of which {label}: {len(some)}, "
+                               f"P&L {_signed(sum(_value(t) - _cost(t) for t in some))}")
     if open_:
         cost = sum(_cost(t) for t in open_)
         if strategy == PAIR:
@@ -233,7 +247,9 @@ def _line(t: dict) -> str:
 def report(store: Store, cfg: Config, latest: int = 8) -> str:
     trades = store.paper_trades()
     lines = [f"Paper trading: ${cfg.paper_bankroll:,.0f} per book, up to ${cfg.paper_max_trade:,.2f} a trade; "
-             f"single sells at {cfg.paper_take_profit:.0%} of max profit"]
+             f"single buys at {price(cfg.paper_min_price)}-{price(cfg.paper_max_price)}, depth >= "
+             f"{cfg.paper_min_depth:g}, 24h volume >= {cfg.paper_min_volume_24h:g}, "
+             f"sells at {cfg.paper_take_profit:.0%} of max profit"]
     for s in STRATEGIES:
         lines += _book(s, [t for t in trades if t["strategy"] == s], cash(trades, s, cfg.paper_bankroll))
     if trades:

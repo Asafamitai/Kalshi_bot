@@ -50,6 +50,13 @@ class Config:
     paper_bankroll: Decimal = Decimal("500")
     paper_max_trade: Decimal = Decimal("15")
     paper_take_profit: Decimal = Decimal("0.80")
+    # The single-contract book's filters: looser than the alerts', to collect
+    # trades faster. Below 0.10, $15 buys hundreds of contracts and one trade
+    # swamps the rest; no volume floor, since a sale needs a real bid anyway.
+    paper_min_price: Decimal = Decimal("0.10")
+    paper_max_price: Decimal = Decimal("0.95")
+    paper_min_depth: Decimal = Decimal("10")
+    paper_min_volume_24h: Decimal = Decimal("0")
     db_path: str = "kalshi_bot.sqlite3"
 
     @classmethod
@@ -91,6 +98,10 @@ class Config:
             paper_bankroll=num("PAPER_BANKROLL", d.paper_bankroll),
             paper_max_trade=num("PAPER_MAX_TRADE", d.paper_max_trade),
             paper_take_profit=num("PAPER_TAKE_PROFIT", d.paper_take_profit),
+            paper_min_price=num("PAPER_MIN_PRICE", d.paper_min_price),
+            paper_max_price=num("PAPER_MAX_PRICE", d.paper_max_price),
+            paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
+            paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
             db_path=env.get("DB_PATH") or d.db_path,
         )
 
