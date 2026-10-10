@@ -1,0 +1,10 @@
+# Secrets: never commit keys
+.env
+*.pem
+*.key
+
+# Local state
+*.sqlite3
+__pycache__/
+.pytest_cache/
+.venv/
