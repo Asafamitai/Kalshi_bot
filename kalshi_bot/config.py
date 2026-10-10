@@ -56,8 +56,8 @@ class Config:
         if pem:
             # Env-var UIs often flatten newlines; PEM needs them back.
             pem = pem.replace("\\n", "\n")
-        chat_id = env.get("TELEGRAM_CHAT_ID") or None
-        allowed = {u.strip() for u in (env.get("TELEGRAM_ALLOWED_USER_IDS") or "").split(",") if u.strip()}
+        chat_id = env.get("KALSHI_LADDER_BOT_CHAT_ID") or None
+        allowed = {u.strip() for u in (env.get("KALSHI_LADDER_BOT_ALLOWED_USER_IDS") or "").split(",") if u.strip()}
         if not allowed and chat_id:
             # In a private chat the chat id is the user's id.
             allowed = {chat_id}
@@ -67,7 +67,7 @@ class Config:
             kalshi_base_url=env.get("KALSHI_API_BASE") or DEFAULT_BASE_URL,
             kalshi_key_id=key_id or None,
             kalshi_private_key=pem or None,
-            telegram_token=env.get("TELEGRAM_BOT_TOKEN") or None,
+            telegram_token=env.get("KALSHI_LADDER_BOT_TOKEN") or None,
             telegram_chat_id=chat_id,
             telegram_allowed_user_ids=frozenset(allowed),
             scan_interval=int(env.get("SCAN_INTERVAL_SECONDS") or d.scan_interval),

@@ -61,7 +61,7 @@ cp .env.example .env        # fill in what you need; .env is git-ignored
 python -m kalshi_bot scan            # one pass over every open market, printed
 python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
 python -m kalshi_bot report          # how long contradictions survived
-python -m kalshi_bot telegram-chats  # who wrote to the bot, to find TELEGRAM_CHAT_ID
+python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
 ```
 
@@ -107,7 +107,7 @@ the depth at the ask, each labelled with its cost including fees. A tap:
 
 Trading is **off by default**: a tap then says what it would have bought.
 `/trading on` and `/trading off` in Telegram switch it (on needs a Kalshi
-key). Only users in `TELEGRAM_ALLOWED_USER_IDS` (default: `TELEGRAM_CHAT_ID`)
+key). Only users in `KALSHI_LADDER_BOT_ALLOWED_USER_IDS` (default: `KALSHI_LADDER_BOT_CHAT_ID`)
 can press buttons or send commands; anyone else gets silence.
 
 ### Running in a Claude Code cloud session
@@ -126,7 +126,7 @@ belongs to another project in the same environment is never picked up.
 | Variable | Default | |
 |---|---|---|
 | `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`) | – | Only for buying. RSA or Ed25519. |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | – | Without them, alerts go to the log. |
+| `KALSHI_LADDER_BOT_TOKEN`, `KALSHI_LADDER_BOT_CHAT_ID` | – | Without them, alerts go to the log. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
 | `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |
 | `MAX_SPREAD` | 0.10 | Widest dominated-rung book whose mid still counts. |

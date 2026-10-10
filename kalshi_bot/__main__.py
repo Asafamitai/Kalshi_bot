@@ -35,7 +35,7 @@ def scan(cfg: Config) -> None:
 
 
 def telegram_chats(cfg: Config) -> None:
-    """Who has written to the bot lately, to find TELEGRAM_CHAT_ID. Stop `run` first:
+    """Who has written to the bot lately, to find KALSHI_LADDER_BOT_CHAT_ID. Stop `run` first:
     Telegram allows one reader of updates at a time."""
     for u in Telegram(cfg.telegram_token).updates(None, timeout=0):
         msg = u.get("message") or (u.get("callback_query") or {}).get("message") or {}
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("run", help="scan every SCAN_INTERVAL_SECONDS and alert on Telegram")
     rep = sub.add_parser("report", help="how long contradictions survived")
     rep.add_argument("--hours", type=float, default=24 * 7)
-    sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find TELEGRAM_CHAT_ID")
+    sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> None:
         print(episodes.report(Store(cfg.db_path), since_hours=args.hours))
     elif args.command == "telegram-chats":
         if not cfg.telegram_token:
-            parser.error("TELEGRAM_BOT_TOKEN is not set")
+            parser.error("KALSHI_LADDER_BOT_TOKEN is not set")
         telegram_chats(cfg)
     else:
         # One bot per database: a second copy would send every alert twice.
