@@ -2,9 +2,10 @@ import sqlite3
 from decimal import Decimal
 
 import pytest
-from test_trader_app import alerts_sent, make_app, say
+from test_trader_app import Clock, FakeKalshi, FakeTelegram, alerts_sent, make_app, say
 
 from kalshi_bot import episodes, paper
+from kalshi_bot.app import App
 from kalshi_bot.config import Config
 from kalshi_bot.ladder import find_violations
 from kalshi_bot.store import Store
@@ -310,3 +311,92 @@ def test_an_older_database_gains_the_new_columns(ladder, mk, tmp_path):
     client.markets["APP-T195"] = mk("APP-T195", 195, "0.02", "0.03")
     app.scan_once()
     assert closed_by(app)["APP-T195|no"] == "safer"
+
+
+# Paper trading's own Telegram bot
+
+
+def make_paper_app(markets, tmp_path, **cfg):
+    config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}),
+                    paper_telegram_token="tok", paper_telegram_chat_id="77",
+                    paper_telegram_allowed_user_ids=frozenset({"77"}), **cfg)
+    client = FakeKalshi(markets)
+    tg, paper_tg = FakeTelegram(), FakeTelegram()
+    app = App(config, Store(str(tmp_path / "t.sqlite3")), client, client, tg, clock=Clock(), paper_telegram=paper_tg)
+    return app, client, tg, paper_tg
+
+
+def test_paper_bot_hears_what_each_pass_bought(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    (text, buttons), = paper_tg.sent
+    assert buttons is None and text.startswith("📝 <b>מסחר על נייר</b>\n<b>נקנו</b>")
+    link = '<a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">'
+    assert f"• בודדת · 17 NO {link}APP-T195</a> ב-0.86 · $14.77 · חיסכון 11.0¢ · עובר את סינון ההתראות" in text
+    assert "$14.59 · חיסכון 11.0¢ · נעול לפחות +$1.41" in text
+    assert text.endswith("קופה בודדת $485.23 · קופה זוג $485.41")
+    assert len(alerts_sent(tg)) == 1 and not any("מסחר על נייר" in t for t, _ in tg.sent)
+    app.scan_once()
+    assert len(paper_tg.sent) == 1  # nothing new, nothing sent
+
+
+def test_paper_bot_hears_what_closed(ladder, mk, tmp_path):
+    app, client, _, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")  # NO bid 0.98: take profit
+    app.scan_once()
+    assert "<b>נסגרו</b>\n• ✅ בודדת · APP-T195 · נמכר ביעד הרווח · <b>+$1.86</b>" in paper_tg.sent[-1][0]
+    resolve(client, APP_T175="yes", APP_T195="yes")
+    app.scan_once()
+    text = paper_tg.sent[-1][0]
+    assert "• ✅ זוג · " in text and " · הוכרע · <b>+$1.41</b>" in text and "נקנו" not in text
+
+
+def test_paper_bot_losing_trade(ladder, tmp_path):
+    app, client, _, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    resolve(client, APP_T175="yes", APP_T195="yes")
+    app.scan_once()
+    assert "• ❌ בודדת · APP-T195 · הוכרע · <b>-$14.77</b>" in paper_tg.sent[-1][0]
+
+
+def test_paper_bot_commands(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    app.scan_once()
+    app.handle_paper_message({"from": {"id": 77}, "text": "/paper"})
+    assert paper_tg.sent[-1][0].startswith("<pre>Paper trading:") and "single: 1 trades" in paper_tg.sent[-1][0]
+    app.handle_paper_message({"from": {"id": 77}, "text": "hi"})
+    assert "בוט המסחר על נייר" in paper_tg.sent[-1][0]
+    sent = len(paper_tg.sent)
+    app.handle_paper_message({"from": {"id": 42}, "text": "/paper"})  # the alert bot's user isn't this bot's
+    assert len(paper_tg.sent) == sent
+
+
+def test_a_failed_paper_message_does_not_stop_the_scan(ladder, tmp_path):
+    app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
+    paper_tg.send = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("telegram down"))
+    app.scan_once()
+    assert len(app.store.paper_trades()) == 2 and len(alerts_sent(tg)) == 1
+
+
+def test_long_passes_are_split_under_telegrams_limit(mk, tmp_path):
+    markets = []
+    for i in range(40):
+        ev = f"KXLONGEVENTNAME-26OCT-{i:02d}"
+        markets += [mk(f"{ev}-T175", 175, "0.02", "0.04", event=ev), mk(f"{ev}-T195", 195, "0.14", "0.16", event=ev)]
+    app, _, _, paper_tg = make_paper_app(markets, tmp_path, paper_bankroll=D("10000"))
+    app.scan_once()
+    texts = [t for t, _ in paper_tg.sent]
+    assert len(texts) > 1 and all(len(t) <= 4096 for t in texts)
+    assert sum(t.count("\n• ") for t in texts) + sum(t.startswith("• ") for t in texts) == 80
+
+
+def test_paper_bot_config():
+    cfg = Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "SECRET", "KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77",
+                           "KALSHI_LADDER_BOT_CHAT_ID": "42"})
+    assert cfg.paper_telegram and cfg.paper_telegram_chat_id == "77"
+    assert cfg.paper_telegram_allowed_user_ids == frozenset({"77"}) and cfg.telegram_allowed_user_ids == frozenset({"42"})
+    assert "SECRET" not in repr(cfg)
+    assert not Config.from_env({"KALSHI_LADDER_PAPER_BOT_TOKEN": "t"}).paper_telegram  # no chat to send to
+    both = Config.from_env({"KALSHI_LADDER_PAPER_BOT_CHAT_ID": "77", "KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS": "1, 2"})
+    assert both.paper_telegram_allowed_user_ids == frozenset({"1", "2"})

@@ -293,19 +293,20 @@ class Store:
             self._conn.executemany("UPDATE paper_legs SET mark = ? WHERE id = ?",
                                    [(str(m), leg_id) for leg_id, m in marks.items()])
 
-    def close_paper_leg(self, leg_id: int, how: str, exit_price: Decimal, payout: Decimal, at: float) -> None:
-        """`how` is sold or settled; the trade closes with its last open leg."""
+    def close_paper_leg(self, leg_id: int, how: str, exit_price: Decimal, payout: Decimal, at: float) -> int | None:
+        """`how` is sold or settled; the trade closes with its last open leg. Returns its id if it just did."""
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE paper_legs SET status = ?, exit_price = ?, payout = ?, closed_at = ? WHERE id = ?",
                 (how, str(exit_price), str(payout), at, leg_id),
             )
             (trade_id,), = self._conn.execute("SELECT trade_id FROM paper_legs WHERE id = ?", (leg_id,))
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE paper_trades SET status = 'closed', closed_at = ?, exit_reason = ? WHERE id = ? AND NOT EXISTS "
                 "(SELECT 1 FROM paper_legs WHERE trade_id = ? AND status = 'open')",
                 (at, how, trade_id, trade_id),
             )
+            return trade_id if cur.rowcount == 1 else None
 
     def paper_trades(self) -> list[dict]:
         """Every paper trade, oldest first, with its legs."""

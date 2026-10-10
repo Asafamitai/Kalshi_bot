@@ -35,10 +35,10 @@ def scan(cfg: Config) -> None:
             print(console_line(v))
 
 
-def telegram_chats(cfg: Config) -> None:
-    """Who has written to the bot lately, to find KALSHI_LADDER_BOT_CHAT_ID. Stop `run` first:
+def telegram_chats(token: str) -> None:
+    """Who has written to the bot lately, to find its chat id. Stop `run` first:
     Telegram allows one reader of updates at a time."""
-    for u in Telegram(cfg.telegram_token).updates(None, timeout=0):
+    for u in Telegram(token).updates(None, timeout=0):
         msg = u.get("message") or (u.get("callback_query") or {}).get("message") or {}
         chat, sender = msg.get("chat") or {}, msg.get("from") or {}
         if chat:
@@ -55,7 +55,9 @@ def main(argv: list[str] | None = None) -> None:
     rep.add_argument("--hours", type=float, default=24 * 7)
     pap = sub.add_parser("paper", help="the paper trading books: single contract vs locked pair")
     pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
-    sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
+    chats = sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
+    chats.add_argument("--paper", action="store_true",
+                       help="the paper trading bot instead, to find KALSHI_LADDER_PAPER_BOT_CHAT_ID")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -69,9 +71,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "paper":
         print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "telegram-chats":
-        if not cfg.telegram_token:
-            parser.error("KALSHI_LADDER_BOT_TOKEN is not set")
-        telegram_chats(cfg)
+        name, token = ("KALSHI_LADDER_PAPER_BOT_TOKEN", cfg.paper_telegram_token) if args.paper \
+            else ("KALSHI_LADDER_BOT_TOKEN", cfg.telegram_token)
+        if not token:
+            parser.error(f"{name} is not set")
+        telegram_chats(token)
     else:
         # One bot per database: a second copy would send every alert twice.
         lock = open(cfg.db_path + ".lock", "w")
@@ -82,13 +86,22 @@ def main(argv: list[str] | None = None) -> None:
         telegram = None
         if cfg.telegram_token and cfg.telegram_chat_id:
             telegram = Telegram(cfg.telegram_token)
+        log = logging.getLogger("kalshi_bot")
+        paper_telegram = None
+        if cfg.paper_telegram and cfg.paper_telegram_token == cfg.telegram_token:
+            # Two readers of one bot's updates make Telegram refuse both.
+            log.warning("KALSHI_LADDER_PAPER_BOT_TOKEN is the alert bot's token: paper trading needs a bot of its own")
+        elif cfg.paper_telegram:
+            paper_telegram = Telegram(cfg.paper_telegram_token)
         store = Store(cfg.db_path)
-        logging.getLogger("kalshi_bot").info(
-            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, paper %s, telegram %s",
+        log.info(
+            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, paper %s, telegram %s, "
+            "paper telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
             "on" if store.trading_on else "off", "on" if cfg.paper_trading else "off", "on" if telegram else "off",
+            "on" if paper_telegram else "off",
         )
-        App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram).run()
+        App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram, paper_telegram=paper_telegram).run()
 
 
 if __name__ == "__main__":

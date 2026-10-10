@@ -23,6 +23,12 @@ def load_dotenv(path: str | Path = ".env") -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
+def _users(env, name: str, chat_id: str | None) -> set[str]:
+    """Who may use a bot: the listed user ids, or else the chat's (in a private chat they are the same)."""
+    users = {u.strip() for u in (env.get(name) or "").split(",") if u.strip()}
+    return users or ({chat_id} if chat_id else set())
+
+
 @dataclass(frozen=True)
 class Config:
     kalshi_base_url: str = DEFAULT_BASE_URL
@@ -57,6 +63,11 @@ class Config:
     paper_max_price: Decimal = Decimal("0.95")
     paper_min_depth: Decimal = Decimal("10")
     paper_min_volume_24h: Decimal = Decimal("0")
+    # Optional: a Telegram bot of its own for paper trading, so its messages
+    # stay apart from the alerts.
+    paper_telegram_token: str | None = field(default=None, repr=False)
+    paper_telegram_chat_id: str | None = None
+    paper_telegram_allowed_user_ids: frozenset[str] = frozenset()
     db_path: str = "kalshi_bot.sqlite3"
 
     @classmethod
@@ -70,10 +81,9 @@ class Config:
             # Env-var UIs often flatten newlines; PEM needs them back.
             pem = pem.replace("\\n", "\n")
         chat_id = env.get("KALSHI_LADDER_BOT_CHAT_ID") or None
-        allowed = {u.strip() for u in (env.get("KALSHI_LADDER_BOT_ALLOWED_USER_IDS") or "").split(",") if u.strip()}
-        if not allowed and chat_id:
-            # In a private chat the chat id is the user's id.
-            allowed = {chat_id}
+        allowed = _users(env, "KALSHI_LADDER_BOT_ALLOWED_USER_IDS", chat_id)
+        paper_chat_id = env.get("KALSHI_LADDER_PAPER_BOT_CHAT_ID") or None
+        paper_allowed = _users(env, "KALSHI_LADDER_PAPER_BOT_ALLOWED_USER_IDS", paper_chat_id)
         d = cls()
         num = lambda name, default: Decimal(env.get(name) or default)  # noqa: E731
         return cls(
@@ -102,8 +112,15 @@ class Config:
             paper_max_price=num("PAPER_MAX_PRICE", d.paper_max_price),
             paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
             paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
+            paper_telegram_token=env.get("KALSHI_LADDER_PAPER_BOT_TOKEN") or None,
+            paper_telegram_chat_id=paper_chat_id,
+            paper_telegram_allowed_user_ids=frozenset(paper_allowed),
             db_path=env.get("DB_PATH") or d.db_path,
         )
+
+    @property
+    def paper_telegram(self) -> bool:
+        return bool(self.paper_telegram_token and self.paper_telegram_chat_id)
 
     def kalshi_client(self) -> KalshiClient:
         key = load_private_key(self.kalshi_private_key) if self.kalshi_private_key else None

@@ -26,11 +26,12 @@ from __future__ import annotations
 import time
 from collections import Counter
 from decimal import Decimal
+from html import escape
 
 from . import alerts
 from .config import Config
 from .fees import fee_per_contract, order_cost, order_fee
-from .format import pair, price
+from .format import event_url, pair, price
 from .kalshi import KalshiClient
 from .ladder import ONE, ZERO, Rung, Violation, to_decimal
 from .store import Store
@@ -102,13 +103,15 @@ def cash(trades: list[dict], strategy: str, bankroll: Decimal) -> Decimal:
 
 
 def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation],
-         markets: dict[str, dict], now: float) -> dict[str, int]:
+         markets: dict[str, dict], now: float) -> dict:
     """One pass: mark what is held, sell or settle what is done, then open new trades.
 
     `markets` is the scan's open markets by ticker; a leg missing from it has
-    stopped trading and is looked up to see whether it has resolved.
+    stopped trading and is looked up to see whether it has resolved. Returns
+    the ids of the trades opened and closed, and how many legs were sold and
+    settled.
     """
-    done = {"opened": 0, "sold": 0, "settled": 0}
+    done = {"opened": [], "closed": [], "sold": 0, "settled": 0}
     marks, gone = {}, []
     for leg in store.open_paper_legs():
         m = markets.get(leg["ticker"])
@@ -120,7 +123,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         marks[leg["id"]] = bid
         if leg["strategy"] == SINGLE and _take_profit(leg, bid, depth, cfg.paper_take_profit):
             proceeds = bid * leg["count"] - order_fee(bid, leg["count"])
-            store.close_paper_leg(leg["id"], "sold", bid, proceeds, now)
+            _closed(done, store.close_paper_leg(leg["id"], "sold", bid, proceeds, now))
             done["sold"] += 1
     store.set_paper_marks(marks)
     if gone:
@@ -128,10 +131,15 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         for leg in gone:
             value = settlement(fresh.get(leg["ticker"]), leg["side"])
             if value is not None:
-                store.close_paper_leg(leg["id"], "settled", value, value * leg["count"], now)
+                _closed(done, store.close_paper_leg(leg["id"], "settled", value, value * leg["count"], now))
                 done["settled"] += 1
     done["opened"] = _open(store, client, cfg, violations, now)
     return done
+
+
+def _closed(done: dict, trade_id: int | None) -> None:
+    if trade_id is not None:
+        done["closed"].append(trade_id)
 
 
 def _take_profit(leg: dict, bid: Decimal, depth: Decimal, share: Decimal) -> bool:
@@ -143,16 +151,16 @@ def _key(v: Violation) -> tuple[str, str, str]:
     return (v.side, v.safer.ticker, v.dominated.ticker)
 
 
-def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float) -> int:
+def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float) -> list[int]:
     trades = store.paper_trades()
     busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in STRATEGIES}
     want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg)]
             for s in STRATEGIES}
     candidates = list({_key(v): v for s in STRATEGIES for v in want[s]}.values())
     if not candidates:
-        return 0
+        return []
     fresh = alerts.reread(client, candidates, cfg)
-    opened = 0
+    opened = []
     for s in STRATEGIES:
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
@@ -167,10 +175,9 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
                 continue
             if s == PAIR and bought[0][2] <= cost:
                 continue  # the per-order fee rounding ate the lock at this size
-            store.add_paper_trade(s, v, bought, alerts.alertable(v, cfg), now)
+            opened.append(store.add_paper_trade(s, v, bought, alerts.alertable(v, cfg), now))
             left -= cost
             busy[s].add(v.safer.event_ticker)
-            opened += 1
     return opened
 
 
@@ -256,3 +263,49 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
         lines.append("Latest (UTC):")
         lines += [_line(t) for t in reversed(trades[-latest:])]
     return "\n".join(lines)
+
+
+# Telegram: one message per pass with what happened, in Hebrew like the alerts.
+
+_NAMES = {SINGLE: "בודדת", PAIR: "זוג"}
+_EXITS = {"sold": "נמכר ביעד הרווח", "settled": "הוכרע"}
+_LIMIT = 3500  # Telegram allows 4096 characters a message
+
+
+def _bought(t: dict) -> str:
+    url = escape(event_url(t["event"]))
+    legs_ = " + ".join(f'{leg["count"]} {leg["side"].upper()} <a href="{url}">{escape(leg["ticker"])}</a>'
+                       f" ב-{price(leg['price'])}" for leg in t["legs"])
+    notes = [f"חיסכון {Decimal(t['saving']) * 100:.1f}¢"]
+    if t["strategy"] == PAIR:
+        notes.append(f"נעול לפחות {_signed(_floor(t))}")
+    elif t["alertable"]:
+        notes.append("עובר את סינון ההתראות")
+    return f"• {_NAMES[t['strategy']]} · {legs_} · ${_cost(t):,.2f} · {' · '.join(notes)}"
+
+
+def _ended(t: dict) -> str:
+    tickers = " + ".join(escape(leg["ticker"]) for leg in t["legs"])
+    pnl = _value(t) - _cost(t)
+    return f"• {'✅' if pnl > 0 else '❌'} {_NAMES[t['strategy']]} · {tickers} · {_EXITS[t['exit_reason']]} · <b>{_signed(pnl)}</b>"
+
+
+def pass_messages(store: Store, cfg: Config, done: dict) -> list[str]:
+    """What a pass opened and closed, ready for Telegram; [] when nothing happened."""
+    if not done["opened"] and not done["closed"]:
+        return []
+    trades = store.paper_trades()
+    by_id = {t["id"]: t for t in trades}
+    lines = ["📝 <b>מסחר על נייר</b>"]
+    if done["opened"]:
+        lines += ["<b>נקנו</b>"] + [_bought(by_id[i]) for i in done["opened"]]
+    if done["closed"]:
+        lines += ["<b>נסגרו</b>"] + [_ended(by_id[i]) for i in done["closed"]]
+    lines.append(" · ".join(f"קופה {_NAMES[s]} ${cash(trades, s, cfg.paper_bankroll):,.2f}" for s in STRATEGIES))
+    messages, current = [], ""
+    for line in lines:
+        if current and len(current) + len(line) + 1 > _LIMIT:
+            messages.append(current)
+            current = ""
+        current = f"{current}\n{line}" if current else line
+    return messages + [current]
