@@ -64,24 +64,24 @@ def test_strict_keeps_to_the_alert_price_range(mk):
     assert v.ask == D("0.21") and paper.single_filters(v, cfg) and not paper.strict_filters(v, cfg)
 
 
-def test_only_strict_opens_by_default_and_the_others_see_out_what_they_hold(ladder, mk, tmp_path):
+def test_single_stops_opening_by_default_and_sees_out_what_it_holds(ladder, mk, tmp_path):
     app, client, _ = make_app(ladder, tmp_path)
     app.scan_once()
     assert len(book(app, "single")) == 1
     app.cfg = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}))
-    assert app.cfg.paper_books == ("strict",)
+    assert app.cfg.paper_books == ("strict", "pair")
     resolve(client, APP_T175="no", APP_T195="no")
     app.scan_once()
     (single,) = book(app, "single")
     assert single["status"] == "closed" and single["exit_reason"] == "settled"
     client.markets = {m["ticker"]: m for m in (mk("APP-T175", 175, "0.02", "0.04"), mk("APP-T195", 195, "0.14", "0.16"))}
     client.scan_markets = None
-    app.scan_once()  # the same contradiction again: only strict buys it
+    app.scan_once()  # the same contradiction again: single no longer buys it
     assert len(book(app, "single")) == 1 and len(book(app, "strict")) == 2
 
 
 def test_paper_books_config():
-    assert Config.from_env({}).paper_books == ("strict",)
+    assert Config.from_env({}).paper_books == ("strict", "pair")
     assert Config.from_env({"PAPER_BOOKS": "Single, pair"}).paper_books == ("single", "pair")
 
 

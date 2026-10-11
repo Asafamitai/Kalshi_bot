@@ -68,7 +68,7 @@ class Config:
     # says the cheap ask is no bargain.
     paper_strict_max_spread: Decimal = Decimal("0.05")
     # The books that open new trades; the others only see out what they hold.
-    paper_books: tuple[str, ...] = ("strict",)
+    paper_books: tuple[str, ...] = ("strict", "pair")
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
