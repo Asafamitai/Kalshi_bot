@@ -164,15 +164,17 @@ def _key(v: Violation) -> tuple[str, str, str]:
 
 def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float) -> list[int]:
     trades = store.paper_trades()
-    busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in STRATEGIES}
+    # A book left out of PAPER_BOOKS opens nothing, but what it holds is still marked, sold and settled.
+    books = [s for s in STRATEGIES if s in cfg.paper_books]
+    busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in books}
     want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg)]
-            for s in STRATEGIES}
-    candidates = list({_key(v): v for s in STRATEGIES for v in want[s]}.values())
+            for s in books}
+    candidates = list({_key(v): v for s in books for v in want[s]}.values())
     if not candidates:
         return []
     fresh = alerts.reread(client, candidates, cfg)
     opened = []
-    for s in STRATEGIES:
+    for s in books:
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
         picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg)]
@@ -268,7 +270,8 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
              f"single buys at {price(cfg.paper_min_price)}-{price(cfg.paper_max_price)}, depth >= "
              f"{cfg.paper_min_depth:g}, 24h volume >= {cfg.paper_min_volume_24h:g}, "
              f"sells at {cfg.paper_take_profit:.0%} of max profit; strict buys what alerts would at "
-             f"{price(cfg.min_price)}-{price(cfg.max_price)}, spread <= {price(cfg.paper_strict_max_spread)}"]
+             f"{price(cfg.min_price)}-{price(cfg.max_price)}, spread <= {price(cfg.paper_strict_max_spread)}; "
+             f"opening new trades: {', '.join(cfg.paper_books) or 'none'}"]
     for s in STRATEGIES:
         lines += _book(s, [t for t in trades if t["strategy"] == s], cash(trades, s, cfg.paper_bankroll))
     if trades:
@@ -313,7 +316,8 @@ def pass_messages(store: Store, cfg: Config, done: dict) -> list[str]:
         lines += ["<b>נקנו</b>"] + [_bought(by_id[i]) for i in done["opened"]]
     if done["closed"]:
         lines += ["<b>נסגרו</b>"] + [_ended(by_id[i]) for i in done["closed"]]
-    lines.append(" · ".join(f"קופה {_NAMES[s]} ${cash(trades, s, cfg.paper_bankroll):,.2f}" for s in STRATEGIES))
+    lines.append(" · ".join(f"קופה {_NAMES[s]} ${cash(trades, s, cfg.paper_bankroll):,.2f}"
+                              for s in STRATEGIES if s in cfg.paper_books or any(t["strategy"] == s for t in trades)))
     messages, current = [], ""
     for line in lines:
         if current and len(current) + len(line) + 1 > _LIMIT:

@@ -67,6 +67,8 @@ class Config:
     # contract bought. A wide one costs its spread at once, and its own mid
     # says the cheap ask is no bargain.
     paper_strict_max_spread: Decimal = Decimal("0.05")
+    # The books that open new trades; the others only see out what they hold.
+    paper_books: tuple[str, ...] = ("strict",)
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -117,6 +119,8 @@ class Config:
             paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
             paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
             paper_strict_max_spread=num("PAPER_STRICT_MAX_SPREAD", d.paper_strict_max_spread),
+            paper_books=tuple(b.strip().lower() for b in (env.get("PAPER_BOOKS") or ",".join(d.paper_books)).split(",")
+                              if b.strip()),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),

@@ -125,8 +125,10 @@ can press buttons or send commands; anyone else gets silence.
 ### Paper trading
 
 On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
-Every pass, three books, each with its own `PAPER_BANKROLL`, trade what the scan
-found:
+Every pass, the books named in `PAPER_BOOKS` (default: `strict` only), each
+with its own `PAPER_BANKROLL`, trade what the scan found. A book left out opens
+nothing new but still sells and settles what it holds, and the report keeps
+its history.
 
 - **single** buys the safer contract of every contradiction with a bid
   behind its ask, at least `MIN_NET_SAVING` after the fee, and its own
@@ -217,6 +219,7 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_MIN_PRICE`, `PAPER_MAX_PRICE` | 0.10, 0.95 | Single book's buy price band. |
 | `PAPER_MIN_DEPTH`, `PAPER_MIN_VOLUME_24H` | 10, 0 | Single book, contracts. |
 | `PAPER_STRICT_MAX_SPREAD` | 0.05 | Strict book: widest book it buys from. |
+| `PAPER_BOOKS` | strict | Books that open new trades: any of `single`, `strict`, `pair`. |
 
 ## Tests
 
