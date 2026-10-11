@@ -64,7 +64,7 @@ class App:
         ladders = build_ladders(markets)
         found = find_violations(markets, self.cfg.min_saving, self.cfg.max_spread)
         now = self.clock()
-        qualifying = {v.key for v in found if alerts.alertable(v, self.cfg)}
+        qualifying = {v.key for v in found if alerts.alertable(v, self.cfg, now)}
         opened, closed = episodes.update(self.store, found, qualifying, now, by_ticker)
 
         picked = alerts.pick(found, self.store, self.cfg, self.scan_client, now)

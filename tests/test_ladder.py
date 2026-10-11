@@ -118,7 +118,7 @@ def test_ladders_split_by_event_type_close_and_rules(mk):
         mk("A-T100", 100, "0.02", "0.04"),
         mk("A-T110", 110, "0.14", "0.16", event="OTHER"),
         mk("A-T120", 120, "0.14", "0.16", strike_type="greater_or_equal"),
-        mk("A-T130", 130, "0.14", "0.16", close_time="2026-11-30T23:59:00Z"),
+        mk("A-T130", 130, "0.14", "0.16", close_time="2030-11-30T23:59:00Z"),
     ]
     other_subject = mk("A-T140", 140, "0.14", "0.16")
     other_subject["rules_primary"] = "If the rival app has above 140 downloads, Yes."

@@ -92,6 +92,12 @@ Only the best of them become **alerts**:
 - buy price between `MIN_PRICE` and `MAX_PRICE` (below is lottery tickets,
   above is pennies against dollars);
 - at least `MIN_DEPTH` contracts at the ask and `MIN_VOLUME_24H` traded in a day;
+- at least `MIN_HOURS_LEFT` (24) hours before the market stops trading or its
+  outcome is due, whichever Kalshi gives first (`close_time`,
+  `expected_expiration_time`). A live game moves faster than a scan every few
+  minutes: a contradiction there is usually a rung that hasn't caught up, and
+  the cheap side is cheap for a reason. The first night of paper trading lost
+  every settled trade in fourth-quarter markets;
 - the same option (contract and side) at most once per `COOLDOWN_HOURS`, kept
   in the database so a restart doesn't repeat it;
 - at most `MAX_ALERTS_PER_PASS` per pass, best net saving first;
@@ -134,8 +140,8 @@ its history.
   behind its ask, at least `MIN_NET_SAVING` after the fee, and its own
   filters, looser than the alerts' so trades accumulate faster: price
   `PAPER_MIN_PRICE` to `PAPER_MAX_PRICE` (0.10 to 0.95), at least
-  `PAPER_MIN_DEPTH` (10) contracts at the ask, and `PAPER_MIN_VOLUME_24H` (0)
-  traded in a day. Below 0.10, $15 buys hundreds of contracts and one trade
+  `PAPER_MIN_DEPTH` (10) contracts at the ask, `PAPER_MIN_VOLUME_24H` (0)
+  traded in a day, and the alerts' `MIN_HOURS_LEFT`. Below 0.10, $15 buys hundreds of contracts and one trade
   would swamp the rest; volume isn't required because a sale needs a real bid
   anyway. Each trade records whether it also passed the alert filters, and the
   report gives those trades' P&L apart. It spends up to `PAPER_MAX_TRADE`
@@ -151,8 +157,9 @@ its history.
 - **pair** trades only when the safer ask is below the dominated rung's bid,
   and the pair is profitable after fees. It buys the safer contract and the
   other side of the dominated one, which together pay at least 1 in every
-  outcome, so the profit is known at entry. Held to settlement. No price band:
-  the hedge leg is cheap by design.
+  outcome, so the profit is known at entry. Held to settlement. No price band
+  (the hedge leg is cheap by design) and no `MIN_HOURS_LEFT`: it pays whatever
+  happens.
 
 Each holds at most one trade per event at a time (the two sides of one
 inversion are the same bet), only buy with the cash their bankroll has left,
@@ -162,10 +169,18 @@ minus the fee. Settlement pays 1 or 0. Real orders would fill no better.
 Open legs are marked at their bid every pass, and legs whose market stopped
 trading are settled once Kalshi reports a result.
 
+Every leg also records the mid of what it bought at entry, and again 15
+minutes, an hour and four hours later (by the first pass inside twice that
+time, or never, so a late pass can't pass off a later price as an earlier
+one). That answers the question settlement takes weeks to: if the cheap
+contract really was cheap, its price rises toward the dear one's after it is
+bought; if it keeps falling, the scan bought a stale price.
+
 `paper` (or `/paper` in Telegram) shows each book: trades, cash, realized
 P&L, open positions at the bid (or the locked minimum for pairs), how the
 single book did on the trades that passed the alert filters and on those where
-a pair was also available, and the latest trades.
+a pair was also available, the average move of the mid after buying for
+single and strict, and the latest trades.
 
 #### Its own Telegram bot
 
@@ -209,6 +224,7 @@ belongs to another project in the same environment is never picked up.
 | `MIN_NET_SAVING` | 0.01 | Alerted: saving after the fee. |
 | `MIN_PRICE`, `MAX_PRICE` | 0.30, 0.90 | Buy price band. |
 | `MIN_DEPTH`, `MIN_VOLUME_24H` | 50, 50 | Contracts. |
+| `MIN_HOURS_LEFT` | 24 | Hours before the market stops trading or resolves; also the single and strict books'. 0 turns it off. |
 | `COOLDOWN_HOURS` | 12 | Per option. |
 | `MAX_ALERTS_PER_PASS` | 10 | |
 | `BUY_SIZES` | 10,50 | Buttons, plus "all". |

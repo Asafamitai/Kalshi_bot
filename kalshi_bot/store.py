@@ -114,7 +114,12 @@ CREATE TABLE IF NOT EXISTS paper_legs (
     status TEXT NOT NULL DEFAULT 'open',
     exit_price TEXT,
     payout TEXT,
-    closed_at REAL
+    closed_at REAL,
+    -- the mid of what was bought, at entry and then 15 minutes, an hour and four hours later
+    entry_mid TEXT,
+    mid_15m TEXT,
+    mid_1h TEXT,
+    mid_4h TEXT
 );
 """
 
@@ -124,7 +129,10 @@ _ADDED_COLUMNS = {
     "episodes_closed": ("ref_safer_ask TEXT", "ref_dominated_mid TEXT", "close_safer_ask TEXT",
                         "close_dominated_mid TEXT", "closed_by TEXT"),
     "paper_trades": ("alertable INTEGER NOT NULL DEFAULT 0",),
+    "paper_legs": ("entry_mid TEXT", "mid_15m TEXT", "mid_1h TEXT", "mid_4h TEXT"),
 }
+
+_MARKOUT_COLS = ("mid_15m", "mid_1h", "mid_4h")
 
 _EPISODE_COLS = ("key", "side", "safer", "dominated", "opened_at", "last_seen", "first_saving",
                  "max_saving", "max_net_saving", "alertable", "ref_safer_ask", "ref_dominated_mid")
@@ -263,9 +271,9 @@ class Store:
 
     # Paper trading.
 
-    def add_paper_trade(self, strategy: str, v: Violation, legs: list[tuple[str, str, int, Decimal, Decimal]],
-                        alertable: bool, at: float) -> int:
-        """`legs` are (ticker, side, count, price, cost including the fee)."""
+    def add_paper_trade(self, strategy: str, v: Violation,
+                        legs: list[tuple[str, str, int, Decimal, Decimal, Decimal]], alertable: bool, at: float) -> int:
+        """`legs` are (ticker, side, count, price, cost including the fee, mid)."""
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO paper_trades (strategy, opened_at, event, side, safer, dominated, saving, bid_through, "
@@ -273,20 +281,29 @@ class Store:
                 (strategy, at, v.safer.event_ticker, v.side, v.safer.ticker, v.dominated.ticker, str(v.saving),
                  int(v.bid_through), int(alertable)),
             )
-            for ticker, side, count, price, cost in legs:
+            for ticker, side, count, price, cost, mid in legs:
                 self._conn.execute(
-                    "INSERT INTO paper_legs (trade_id, ticker, side, count, price, cost) VALUES (?,?,?,?,?,?)",
-                    (cur.lastrowid, ticker, side, count, str(price), str(cost)),
+                    "INSERT INTO paper_legs (trade_id, ticker, side, count, price, cost, entry_mid) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (cur.lastrowid, ticker, side, count, str(price), str(cost), str(mid)),
                 )
             return cur.lastrowid
 
     def open_paper_legs(self) -> list[dict]:
-        cols = ["id", "trade_id", "strategy", "ticker", "side", "count", "price"]
+        cols = ["id", "trade_id", "strategy", "ticker", "side", "count", "price", "opened_at", *_MARKOUT_COLS]
         rows = self._read(
-            "SELECT l.id, l.trade_id, t.strategy, l.ticker, l.side, l.count, l.price "
+            "SELECT l.id, l.trade_id, t.strategy, l.ticker, l.side, l.count, l.price, t.opened_at, "
+            f"{', '.join('l.' + c for c in _MARKOUT_COLS)} "
             "FROM paper_legs l JOIN paper_trades t ON t.id = l.trade_id WHERE l.status = 'open'"
         )
         return [dict(zip(cols, r), price=Decimal(r[6])) for r in rows]
+
+    def set_paper_markouts(self, markouts: list[tuple[str, Decimal, int]]) -> None:
+        """(column, mid, leg id): the mid a leg's contract had that long after it was bought."""
+        with self._lock, self._conn:
+            for col, mid, leg_id in markouts:
+                assert col in _MARKOUT_COLS
+                self._conn.execute(f"UPDATE paper_legs SET {col} = ? WHERE id = ?", (str(mid), leg_id))
 
     def set_paper_marks(self, marks: dict[int, Decimal]) -> None:
         with self._lock, self._conn:
@@ -312,12 +329,13 @@ class Store:
         """Every paper trade, oldest first, with its legs."""
         tcols = ["id", "strategy", "opened_at", "event", "side", "safer", "dominated", "saving", "bid_through",
                  "alertable", "status", "closed_at", "exit_reason"]
-        lcols = ["trade_id", "ticker", "side", "count", "price", "cost", "mark", "status", "exit_price", "payout"]
+        lcols = ["trade_id", "ticker", "side", "count", "price", "cost", "mark", "status", "exit_price", "payout",
+                 "entry_mid", *_MARKOUT_COLS]
         trades = {r[0]: dict(zip(tcols, r), legs=[])
                   for r in self._read(f"SELECT {', '.join(tcols)} FROM paper_trades ORDER BY id")}
         for r in self._read(f"SELECT {', '.join(lcols)} FROM paper_legs ORDER BY id"):
             leg = dict(zip(lcols, r))
-            for k in ("price", "cost", "mark", "exit_price", "payout"):
+            for k in ("price", "cost", "mark", "exit_price", "payout", "entry_mid", *_MARKOUT_COLS):
                 leg[k] = Decimal(leg[k]) if leg[k] is not None else None
             trades[leg["trade_id"]]["legs"].append(leg)
         return list(trades.values())

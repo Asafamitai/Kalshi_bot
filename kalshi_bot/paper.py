@@ -44,7 +44,12 @@ from .store import Store
 SINGLE, STRICT, PAIR = "single", "strict", "pair"
 STRATEGIES = (SINGLE, STRICT, PAIR)
 
-Leg = tuple[str, str, int, Decimal, Decimal]  # ticker, side, count, price, cost with the fee
+Leg = tuple[str, str, int, Decimal, Decimal, Decimal]  # ticker, side, count, price, cost with the fee, mid
+
+# How the price of what was bought moved after buying: the mid this long
+# after, recorded by the first pass in [after, 2 * after) so a late pass
+# can't pass off a later price as an earlier one.
+MARKOUTS = (("15m", "mid_15m", 900), ("1h", "mid_1h", 3600), ("4h", "mid_4h", 14400))
 
 
 def other_side(side: str) -> str:
@@ -56,39 +61,43 @@ def locked(v: Violation) -> bool:
     return v.buyable and v.bid_through and pair(v)["worst"] > 0
 
 
-def single_filters(v: Violation, cfg: Config) -> bool:
+def single_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
     return (
         v.net_saving >= cfg.min_net_saving
         and cfg.paper_min_price <= v.ask <= cfg.paper_max_price
         and v.ask_size >= cfg.paper_min_depth
         and v.safer.volume_24h >= cfg.paper_min_volume_24h
+        and alerts.enough_time(v, cfg, now)
     )
 
 
-def strict_filters(v: Violation, cfg: Config) -> bool:
-    return alerts.alertable(v, cfg) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
+def strict_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
+    return alerts.alertable(v, cfg, now) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
 
 
-def wanted(strategy: str, v: Violation, cfg: Config) -> bool:
+def wanted(strategy: str, v: Violation, cfg: Config, now: float | None = None) -> bool:
     # Like the buy buttons: no single contract without a bid behind its ask to sell back to.
+    # A locked pair pays whatever happens, so it has no use for the time filter.
     if strategy == PAIR:
         return locked(v)
-    return v.buyable and (single_filters(v, cfg) if strategy == SINGLE else strict_filters(v, cfg))
+    return v.buyable and (single_filters(v, cfg, now) if strategy == SINGLE else strict_filters(v, cfg, now))
 
 
 def legs(strategy: str, v: Violation, budget: Decimal) -> list[Leg]:
     """The most contracts `budget` buys at the ask, fees included; [] if not even one."""
+    safer = (v.safer.ticker, v.side, v.ask, v.safer.mid(v.side))
     if strategy != PAIR:
-        quotes, depth = [(v.safer.ticker, v.side, v.ask)], v.ask_size
+        quotes, depth = [safer], v.ask_size
     else:
         p = pair(v)
-        quotes = [(v.safer.ticker, v.side, v.ask), (v.dominated.ticker, other_side(v.side), p["other_price"])]
+        # The other side's mid mirrors this side's.
+        quotes = [safer, (v.dominated.ticker, other_side(v.side), p["other_price"], ONE - v.dominated.mid(v.side))]
         depth = p["size"]
     prices = [q[2] for q in quotes]
     n = min(int(budget / sum(p + fee_per_contract(p) for p in prices)), int(depth))
     while n > 0 and sum(order_cost(p, n) for p in prices) > budget:
         n -= 1  # fees round up per order
-    return [(t, s, n, p, order_cost(p, n)) for t, s, p in quotes] if n >= 1 else []
+    return [(t, s, n, p, order_cost(p, n), mid) for t, s, p, mid in quotes] if n >= 1 else []
 
 
 def settlement(m: dict | None, side: str) -> Decimal | None:
@@ -123,7 +132,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
     settled.
     """
     done = {"opened": [], "closed": [], "sold": 0, "settled": 0}
-    marks, gone = {}, []
+    marks, markouts, gone = {}, [], []
     for leg in store.open_paper_legs():
         m = markets.get(leg["ticker"])
         if m is None:
@@ -132,11 +141,16 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         rung = Rung.from_market(m)
         bid, depth = (rung.bid(leg["side"]), rung.bid_size(leg["side"])) if rung else (ZERO, ZERO)
         marks[leg["id"]] = bid
+        if rung and not rung.is_empty(leg["side"]):
+            age = now - leg["opened_at"]
+            markouts += [(col, rung.mid(leg["side"]), leg["id"]) for _, col, after in MARKOUTS
+                         if leg[col] is None and after <= age < 2 * after]
         if leg["strategy"] != PAIR and _take_profit(leg, bid, depth, cfg.paper_take_profit):
             proceeds = bid * leg["count"] - order_fee(bid, leg["count"])
             _closed(done, store.close_paper_leg(leg["id"], "sold", bid, proceeds, now))
             done["sold"] += 1
     store.set_paper_marks(marks)
+    store.set_paper_markouts(markouts)
     if gone:
         fresh = {m["ticker"]: m for m in client.get_markets(sorted({leg["ticker"] for leg in gone}))}
         for leg in gone:
@@ -167,7 +181,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     # A book left out of PAPER_BOOKS opens nothing, but what it holds is still marked, sold and settled.
     books = [s for s in STRATEGIES if s in cfg.paper_books]
     busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in books}
-    want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg)]
+    want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg, now)]
             for s in books}
     candidates = list({_key(v): v for s in books for v in want[s]}.values())
     if not candidates:
@@ -177,7 +191,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     for s in books:
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
-        picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg)]
+        picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg, now)]
         picks.sort(key=lambda v: pair(v)["worst"] if s == PAIR else v.net_saving, reverse=True)
         for v in picks:
             if v.safer.event_ticker in busy[s]:
@@ -188,7 +202,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
                 continue
             if s == PAIR and bought[0][2] <= cost:
                 continue  # the per-order fee rounding ate the lock at this size
-            opened.append(store.add_paper_trade(s, v, bought, alerts.alertable(v, cfg), now))
+            opened.append(store.add_paper_trade(s, v, bought, alerts.alertable(v, cfg, now), now))
             left -= cost
             busy[s].add(v.safer.event_ticker)
     return opened
@@ -247,7 +261,27 @@ def _book(strategy: str, trades: list[dict], left: Decimal) -> list[str]:
         else:
             value = sum(_value(t) for t in open_)
             out.append(f"  open: cost ${cost:,.2f}, at the bid ${value:,.2f} ({_signed(value - cost)})")
+    if strategy != PAIR:
+        moved = _markouts(trades)
+        if moved:
+            out.append(f"  price after buying (mid move per contract, + is good): {moved}")
     return out
+
+
+def _markouts(trades: list[dict]) -> str:
+    """How the mid of what was bought moved after buying, on average, per horizon.
+
+    The fastest test of an edge: if the cheap contract really was cheap, its
+    price should rise toward the dear one's; if it keeps falling, the cheap
+    side was right and the scan bought a stale price.
+    """
+    parts = []
+    for label, col, _ in MARKOUTS:
+        moves = [leg[col] - leg["entry_mid"] for t in trades for leg in t["legs"]
+                 if leg[col] is not None and leg["entry_mid"] is not None]
+        if moves:
+            parts.append(f"{label} {sum(moves) / len(moves) * 100:+.1f}¢ (n={len(moves)})")
+    return " · ".join(parts)
 
 
 def _line(t: dict) -> str:
