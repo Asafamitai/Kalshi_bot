@@ -103,6 +103,9 @@ class Rung:
     def bid(self, side: str) -> Decimal:
         return self.yes_bid if side == "yes" else self.no_bid
 
+    def spread(self, side: str) -> Decimal:
+        return self.ask(side) - self.bid(side)
+
     def mid(self, side: str) -> Decimal:
         return (self.bid(side) + self.ask(side)) / 2
 
@@ -122,7 +125,7 @@ class Rung:
 
     def is_priced(self, side: str, max_spread: Decimal) -> bool:
         """A two-sided book tight enough for its mid to be a price."""
-        return not self.is_empty(side) and self.ask(side) - self.bid(side) <= max_spread
+        return not self.is_empty(side) and self.spread(side) <= max_spread
 
     def safety(self, side: str) -> Decimal:
         """Higher means this contract pays in a superset of states."""

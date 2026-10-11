@@ -69,6 +69,7 @@ def ladder(mk):
 
 
 def make_app(markets, tmp_path, can_trade=True, **cfg):
+    cfg.setdefault("paper_books", ("single", "strict", "pair"))  # every book opens, to test each
     config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}), **cfg)
     client = FakeKalshi(markets, can_trade=can_trade)
     tg = FakeTelegram()

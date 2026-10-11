@@ -42,6 +42,49 @@ def resolve(client, **results):
 # Opening
 
 
+def test_strict_buys_what_single_buys_on_a_tight_market(ladder, tmp_path):
+    app, _, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    (single,), (strict,) = book(app, "single"), book(app, "strict")
+    assert legs(strict) == legs(single) == [("APP-T195", "no", 17, D("0.86"))]
+
+
+def test_strict_skips_a_wide_book_on_the_contract_bought(mk, tmp_path):
+    # NO 195 asks 0.90 but bids 0.84: still 0.07 under NO 175's mid, but six cents wide.
+    app, _, _ = make_app([mk("APP-T175", 175, "0.02", "0.04"), mk("APP-T195", 195, "0.10", "0.16")], tmp_path)
+    app.scan_once()
+    assert len(book(app, "single")) == 1 and book(app, "strict") == []
+
+
+def test_strict_keeps_to_the_alert_price_range(mk):
+    # NO 195 at 0.21: inside single's 0.10-0.95, below the alerts' 0.30.
+    cfg = Config()
+    (v,) = [v for v in find_violations([mk("APP-T175", 175, "0.70", "0.72"), mk("APP-T195", 195, "0.79", "0.80")],
+                                       cfg.min_saving, cfg.max_spread) if v.side == "no"]
+    assert v.ask == D("0.21") and paper.single_filters(v, cfg) and not paper.strict_filters(v, cfg)
+
+
+def test_single_stops_opening_by_default_and_sees_out_what_it_holds(ladder, mk, tmp_path):
+    app, client, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    assert len(book(app, "single")) == 1
+    app.cfg = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}))
+    assert app.cfg.paper_books == ("strict", "pair")
+    resolve(client, APP_T175="no", APP_T195="no")
+    app.scan_once()
+    (single,) = book(app, "single")
+    assert single["status"] == "closed" and single["exit_reason"] == "settled"
+    client.markets = {m["ticker"]: m for m in (mk("APP-T175", 175, "0.02", "0.04"), mk("APP-T195", 195, "0.14", "0.16"))}
+    client.scan_markets = None
+    app.scan_once()  # the same contradiction again: single no longer buys it
+    assert len(book(app, "single")) == 1 and len(book(app, "strict")) == 2
+
+
+def test_paper_books_config():
+    assert Config.from_env({}).paper_books == ("strict", "pair")
+    assert Config.from_env({"PAPER_BOOKS": "Single, pair"}).paper_books == ("single", "pair")
+
+
 def test_single_buys_fifteen_dollars_of_the_safer_contract(ladder, tmp_path):
     app, client, _ = make_app(ladder, tmp_path)
     app.scan_once()
@@ -317,6 +360,7 @@ def test_an_older_database_gains_the_new_columns(ladder, mk, tmp_path):
 
 
 def make_paper_app(markets, tmp_path, **cfg):
+    cfg.setdefault("paper_books", paper.STRATEGIES)
     config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}),
                     paper_telegram_token="tok", paper_telegram_chat_id="77",
                     paper_telegram_allowed_user_ids=frozenset({"77"}), **cfg)
@@ -334,7 +378,7 @@ def test_paper_bot_hears_what_each_pass_bought(ladder, tmp_path):
     link = '<a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">'
     assert f"• בודדת · 17 NO {link}APP-T195</a> ב-0.86 · $14.77 · חיסכון 11.0¢ · עובר את סינון ההתראות" in text
     assert "$14.59 · חיסכון 11.0¢ · נעול לפחות +$1.41" in text
-    assert text.endswith("קופה בודדת $485.23 · קופה זוג $485.41")
+    assert text.endswith("קופה בודדת $485.23 · קופה מחמירה $485.23 · קופה זוג $485.41")
     assert len(alerts_sent(tg)) == 1 and not any("מסחר על נייר" in t for t, _ in tg.sent)
     app.scan_once()
     assert len(paper_tg.sent) == 1  # nothing new, nothing sent
@@ -376,7 +420,7 @@ def test_a_failed_paper_message_does_not_stop_the_scan(ladder, tmp_path):
     app, _, tg, paper_tg = make_paper_app(ladder, tmp_path)
     paper_tg.send = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("telegram down"))
     app.scan_once()
-    assert len(app.store.paper_trades()) == 2 and len(alerts_sent(tg)) == 1
+    assert len(app.store.paper_trades()) == 3 and len(alerts_sent(tg)) == 1
 
 
 def test_long_passes_are_split_under_telegrams_limit(mk, tmp_path):
@@ -388,7 +432,7 @@ def test_long_passes_are_split_under_telegrams_limit(mk, tmp_path):
     app.scan_once()
     texts = [t for t, _ in paper_tg.sent]
     assert len(texts) > 1 and all(len(t) <= 4096 for t in texts)
-    assert sum(t.count("\n• ") for t in texts) + sum(t.startswith("• ") for t in texts) == 80
+    assert sum(t.count("\n• ") for t in texts) + sum(t.startswith("• ") for t in texts) == 120
 
 
 def test_paper_bot_config():

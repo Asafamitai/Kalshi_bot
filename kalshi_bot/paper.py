@@ -1,6 +1,6 @@
 """Paper trading: what an autopilot would have done with each contradiction, without money.
 
-Two books run side by side, each with its own bankroll, so they can be compared:
+Three books run side by side, each with its own bankroll, so they can be compared:
 
 - single: the safer contract of every contradiction with at least the alerts'
   net saving and the book's own, looser filters (PAPER_MIN_PRICE to
@@ -8,6 +8,11 @@ Two books run side by side, each with its own bankroll, so they can be compared:
   whether it also passed the alert filters, so the two can be compared. Sold
   once its bid holds PAPER_TAKE_PROFIT of the maximum profit, otherwise held
   to settlement. It wins or loses with the outcome.
+- strict: the same, with the alert filters instead of the looser ones (no
+  dead markets, no long shots) and a book no wider than
+  PAPER_STRICT_MAX_SPREAD on the contract bought. Much of the first day's
+  single book sat in markets with no volume and wide books, marked far below
+  cost the moment they were bought.
 - pair: only where the safer ask is below the dominated rung's bid. Buys the
   safer contract and the other side of the dominated one, which together pay
   at least 1 in every outcome, so the profit is known at entry, after fees.
@@ -36,8 +41,8 @@ from .kalshi import KalshiClient
 from .ladder import ONE, ZERO, Rung, Violation, to_decimal
 from .store import Store
 
-SINGLE, PAIR = "single", "pair"
-STRATEGIES = (SINGLE, PAIR)
+SINGLE, STRICT, PAIR = "single", "strict", "pair"
+STRATEGIES = (SINGLE, STRICT, PAIR)
 
 Leg = tuple[str, str, int, Decimal, Decimal]  # ticker, side, count, price, cost with the fee
 
@@ -60,14 +65,20 @@ def single_filters(v: Violation, cfg: Config) -> bool:
     )
 
 
+def strict_filters(v: Violation, cfg: Config) -> bool:
+    return alerts.alertable(v, cfg) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
+
+
 def wanted(strategy: str, v: Violation, cfg: Config) -> bool:
     # Like the buy buttons: no single contract without a bid behind its ask to sell back to.
-    return v.buyable and single_filters(v, cfg) if strategy == SINGLE else locked(v)
+    if strategy == PAIR:
+        return locked(v)
+    return v.buyable and (single_filters(v, cfg) if strategy == SINGLE else strict_filters(v, cfg))
 
 
 def legs(strategy: str, v: Violation, budget: Decimal) -> list[Leg]:
     """The most contracts `budget` buys at the ask, fees included; [] if not even one."""
-    if strategy == SINGLE:
+    if strategy != PAIR:
         quotes, depth = [(v.safer.ticker, v.side, v.ask)], v.ask_size
     else:
         p = pair(v)
@@ -121,7 +132,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         rung = Rung.from_market(m)
         bid, depth = (rung.bid(leg["side"]), rung.bid_size(leg["side"])) if rung else (ZERO, ZERO)
         marks[leg["id"]] = bid
-        if leg["strategy"] == SINGLE and _take_profit(leg, bid, depth, cfg.paper_take_profit):
+        if leg["strategy"] != PAIR and _take_profit(leg, bid, depth, cfg.paper_take_profit):
             proceeds = bid * leg["count"] - order_fee(bid, leg["count"])
             _closed(done, store.close_paper_leg(leg["id"], "sold", bid, proceeds, now))
             done["sold"] += 1
@@ -153,19 +164,21 @@ def _key(v: Violation) -> tuple[str, str, str]:
 
 def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float) -> list[int]:
     trades = store.paper_trades()
-    busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in STRATEGIES}
+    # A book left out of PAPER_BOOKS opens nothing, but what it holds is still marked, sold and settled.
+    books = [s for s in STRATEGIES if s in cfg.paper_books]
+    busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in books}
     want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg)]
-            for s in STRATEGIES}
-    candidates = list({_key(v): v for s in STRATEGIES for v in want[s]}.values())
+            for s in books}
+    candidates = list({_key(v): v for s in books for v in want[s]}.values())
     if not candidates:
         return []
     fresh = alerts.reread(client, candidates, cfg)
     opened = []
-    for s in STRATEGIES:
+    for s in books:
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
         picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg)]
-        picks.sort(key=lambda v: v.net_saving if s == SINGLE else pair(v)["worst"], reverse=True)
+        picks.sort(key=lambda v: pair(v)["worst"] if s == PAIR else v.net_saving, reverse=True)
         for v in picks:
             if v.safer.event_ticker in busy[s]:
                 continue
@@ -256,7 +269,9 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
     lines = [f"Paper trading: ${cfg.paper_bankroll:,.0f} per book, up to ${cfg.paper_max_trade:,.2f} a trade; "
              f"single buys at {price(cfg.paper_min_price)}-{price(cfg.paper_max_price)}, depth >= "
              f"{cfg.paper_min_depth:g}, 24h volume >= {cfg.paper_min_volume_24h:g}, "
-             f"sells at {cfg.paper_take_profit:.0%} of max profit"]
+             f"sells at {cfg.paper_take_profit:.0%} of max profit; strict buys what alerts would at "
+             f"{price(cfg.min_price)}-{price(cfg.max_price)}, spread <= {price(cfg.paper_strict_max_spread)}; "
+             f"opening new trades: {', '.join(cfg.paper_books) or 'none'}"]
     for s in STRATEGIES:
         lines += _book(s, [t for t in trades if t["strategy"] == s], cash(trades, s, cfg.paper_bankroll))
     if trades:
@@ -267,7 +282,7 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
 
 # Telegram: one message per pass with what happened, in Hebrew like the alerts.
 
-_NAMES = {SINGLE: "בודדת", PAIR: "זוג"}
+_NAMES = {SINGLE: "בודדת", STRICT: "מחמירה", PAIR: "זוג"}
 _EXITS = {"sold": "נמכר ביעד הרווח", "settled": "הוכרע"}
 _LIMIT = 3500  # Telegram allows 4096 characters a message
 
@@ -301,7 +316,8 @@ def pass_messages(store: Store, cfg: Config, done: dict) -> list[str]:
         lines += ["<b>נקנו</b>"] + [_bought(by_id[i]) for i in done["opened"]]
     if done["closed"]:
         lines += ["<b>נסגרו</b>"] + [_ended(by_id[i]) for i in done["closed"]]
-    lines.append(" · ".join(f"קופה {_NAMES[s]} ${cash(trades, s, cfg.paper_bankroll):,.2f}" for s in STRATEGIES))
+    lines.append(" · ".join(f"קופה {_NAMES[s]} ${cash(trades, s, cfg.paper_bankroll):,.2f}"
+                              for s in STRATEGIES if s in cfg.paper_books or any(t["strategy"] == s for t in trades)))
     messages, current = [], ""
     for line in lines:
         if current and len(current) + len(line) + 1 > _LIMIT:
