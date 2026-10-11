@@ -63,6 +63,10 @@ class Config:
     paper_max_price: Decimal = Decimal("0.95")
     paper_min_depth: Decimal = Decimal("10")
     paper_min_volume_24h: Decimal = Decimal("0")
+    # The strict single book: the alert filters, plus a tight book on the
+    # contract bought. A wide one costs its spread at once, and its own mid
+    # says the cheap ask is no bargain.
+    paper_strict_max_spread: Decimal = Decimal("0.05")
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -112,6 +116,7 @@ class Config:
             paper_max_price=num("PAPER_MAX_PRICE", d.paper_max_price),
             paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
             paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
+            paper_strict_max_spread=num("PAPER_STRICT_MAX_SPREAD", d.paper_strict_max_spread),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),

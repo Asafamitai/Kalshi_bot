@@ -125,7 +125,7 @@ can press buttons or send commands; anyone else gets silence.
 ### Paper trading
 
 On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
-Every pass, two books, each with its own `PAPER_BANKROLL`, trade what the scan
+Every pass, three books, each with its own `PAPER_BANKROLL`, trade what the scan
 found:
 
 - **single** buys the safer contract of every contradiction with a bid
@@ -140,13 +140,19 @@ found:
   dollars including the fee, sells once its bid holds `PAPER_TAKE_PROFIT`
   (80%) of the maximum profit and can take the whole position, and otherwise
   holds to settlement. It wins or loses with the outcome.
+- **strict** is the single book with the alert filters instead of its own
+  (price 0.30 to 0.90, depth and 24h volume of at least 50) and a book no
+  wider than `PAPER_STRICT_MAX_SPREAD` (0.05) on the contract it buys. A wide
+  book costs its spread the moment it is bought, and its own mid says the
+  cheap ask is no bargain. It runs beside single so the two can be compared;
+  it sells and settles like single.
 - **pair** trades only when the safer ask is below the dominated rung's bid,
   and the pair is profitable after fees. It buys the safer contract and the
   other side of the dominated one, which together pay at least 1 in every
   outcome, so the profit is known at entry. Held to settlement. No price band:
   the hedge leg is cheap by design.
 
-Both hold at most one trade per event at a time (the two sides of one
+Each holds at most one trade per event at a time (the two sides of one
 inversion are the same bet), only buy with the cash their bankroll has left,
 and only after a second read of both rungs. Fills are assumed at that read's
 ask, up to the depth shown there, plus the taker fee. Sales are at the bid,
@@ -165,7 +171,7 @@ Paper trading can have a bot of its own, so its messages stay apart from the
 alerts. After every pass that bought, sold or settled anything, that bot sends
 one message, in Hebrew: each trade bought (contracts, price, cost, saving,
 and whether it also passed the alert filters, or the locked minimum for a
-pair), each trade closed with its P&L, and both books' cash. A long pass is
+pair), each trade closed with its P&L, and each book's cash. A long pass is
 split under Telegram's message limit. `/paper` there gives the report; any
 other message gets a short help. Only `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS`
 (default: its chat id) are answered.
@@ -210,6 +216,7 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_TAKE_PROFIT` | 0.80 | Share of the maximum profit at which the single book sells. |
 | `PAPER_MIN_PRICE`, `PAPER_MAX_PRICE` | 0.10, 0.95 | Single book's buy price band. |
 | `PAPER_MIN_DEPTH`, `PAPER_MIN_VOLUME_24H` | 10, 0 | Single book, contracts. |
+| `PAPER_STRICT_MAX_SPREAD` | 0.05 | Strict book: widest book it buys from. |
 
 ## Tests
 
