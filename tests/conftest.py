@@ -15,7 +15,7 @@ def market(
     yes_ask_size="100.00",
     volume_24h="500.00",
     status="active",
-    close_time="2026-10-31T23:59:00Z",
+    close_time="2030-10-31T23:59:00Z",  # after the tests' clock, so no market has run out of time
 ):
     """A market dict shaped like Kalshi's GET /markets response (dollar strings)."""
     yes_bid, yes_ask = Decimal(yes_bid), Decimal(yes_ask)

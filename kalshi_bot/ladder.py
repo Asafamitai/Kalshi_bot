@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
@@ -30,6 +31,16 @@ BELOW = ("less", "less_or_equal")
 SIDES = ("yes", "no")
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def to_epoch(value) -> float | None:
+    """Kalshi's ISO timestamps in seconds; None when missing or unreadable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def to_decimal(value) -> Decimal:
@@ -60,6 +71,8 @@ class Rung:
     yes_ask_size: Decimal
     volume_24h: Decimal
     ladder_key: tuple
+    # When trading stops or the outcome is due, whichever comes first.
+    ends_at: float | None = None
 
     @classmethod
     def from_market(cls, m: dict) -> Rung | None:
@@ -79,6 +92,7 @@ class Rung:
         # once the numbers are blanked out.
         rules_template = _NUMBER.sub("#", m.get("rules_primary") or "")
         ladder_key = (m["event_ticker"], strike_type, m.get("close_time"), rules_template)
+        ends = [t for t in (to_epoch(m.get("close_time")), to_epoch(m.get("expected_expiration_time"))) if t]
         return cls(
             ticker=m["ticker"],
             event_ticker=m["event_ticker"],
@@ -95,6 +109,7 @@ class Rung:
             yes_ask_size=to_decimal(m.get("yes_ask_size_fp")),
             volume_24h=to_decimal(m.get("volume_24h_fp")),
             ladder_key=ladder_key,
+            ends_at=min(ends) if ends else None,
         )
 
     def ask(self, side: str) -> Decimal:
@@ -102,6 +117,9 @@ class Rung:
 
     def bid(self, side: str) -> Decimal:
         return self.yes_bid if side == "yes" else self.no_bid
+
+    def hours_left(self, now: float) -> float | None:
+        return None if self.ends_at is None else (self.ends_at - now) / 3600
 
     def spread(self, side: str) -> Decimal:
         return self.ask(side) - self.bid(side)

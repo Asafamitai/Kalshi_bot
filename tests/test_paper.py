@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -7,7 +8,7 @@ from test_trader_app import Clock, FakeKalshi, FakeTelegram, alerts_sent, make_a
 from kalshi_bot import episodes, paper
 from kalshi_bot.app import App
 from kalshi_bot.config import Config
-from kalshi_bot.ladder import find_violations
+from kalshi_bot.ladder import Rung, find_violations
 from kalshi_bot.store import Store
 
 D = Decimal
@@ -444,3 +445,105 @@ def test_paper_bot_config():
     assert not Config.from_env({"KALSHI_LADDER_AUTO_BOT_TOKEN": "t"}).paper_telegram  # no chat to send to
     both = Config.from_env({"KALSHI_LADDER_AUTO_BOT_CHAT_ID": "77", "KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS": "1, 2"})
     assert both.paper_telegram_allowed_user_ids == frozenset({"1", "2"})
+
+
+# Markets that end within hours
+
+
+NOW = 1_800_000_000  # the tests' clock
+
+
+def iso(t):
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ending_in(mk, hours):
+    """The fixture ladder, in a market that stops trading `hours` after the tests' clock."""
+    end = iso(NOW + hours * 3600)
+    return [mk("APP-T175", 175, "0.02", "0.04", close_time=end), mk("APP-T195", 195, "0.14", "0.16", close_time=end)]
+
+
+def test_nothing_but_pairs_in_a_market_that_ends_within_a_day(mk, tmp_path):
+    app, _, tg = make_app(ending_in(mk, 3), tmp_path)
+    app.scan_once()
+    assert alerts_sent(tg) == []
+    assert book(app, "single") == [] and book(app, "strict") == []
+    assert len(book(app, "pair")) == 1  # a locked pair pays whatever happens
+
+
+def test_a_day_left_is_enough(mk, tmp_path):
+    app, _, tg = make_app(ending_in(mk, 25), tmp_path)
+    app.scan_once()
+    assert len(alerts_sent(tg)) == 1 and len(book(app, "strict")) == 1 and len(book(app, "single")) == 1
+
+
+def test_the_expected_resolution_counts_when_it_comes_first(ladder, tmp_path):
+    for m in ladder:
+        m["expected_expiration_time"] = iso(NOW + 2 * 3600)  # a game tonight in a market open for years
+    app, _, tg = make_app(ladder, tmp_path)
+    app.scan_once()
+    assert alerts_sent(tg) == [] and book(app, "strict") == []
+
+
+def test_min_hours_left_zero_switches_it_off(mk, tmp_path):
+    # Even past its expected resolution, as a market still open while it waits for a result.
+    app, _, tg = make_app(ending_in(mk, -1), tmp_path, min_hours_left=0)
+    app.scan_once()
+    assert len(alerts_sent(tg)) == 1
+
+
+def test_end_time_is_whichever_comes_first(mk):
+    m = mk("A-T1", 1, "0.40", "0.42", close_time=iso(NOW + 7200))
+    assert Rung.from_market(m).ends_at == NOW + 7200
+    m["expected_expiration_time"] = iso(NOW + 3600)
+    assert Rung.from_market(m).hours_left(NOW) == 1
+    del m["close_time"], m["expected_expiration_time"]
+    assert Rung.from_market(m).ends_at is None  # unknown: not held against it
+    assert Config.from_env({"MIN_HOURS_LEFT": "6"}).min_hours_left == 6 and Config().min_hours_left == 24
+
+
+# The price after buying
+
+
+def test_price_after_buying(ladder, mk, tmp_path):
+    app, client, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    (t,) = book(app, "strict")
+    assert t["legs"][0]["entry_mid"] == D("0.85")  # NO 195 at 0.84 / 0.86
+    assert [leg["entry_mid"] for leg in book(app, "pair")[0]["legs"]] == [D("0.85"), D("0.03")]
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.10", "0.12")  # NO now 0.88 / 0.90
+    app.clock.now += 10 * 60
+    app.scan_once()
+    assert book(app, "strict")[0]["legs"][0]["mid_15m"] is None  # too early
+    app.clock.now += 6 * 60
+    app.scan_once()
+    leg = book(app, "strict")[0]["legs"][0]
+    assert leg["mid_15m"] == D("0.89") and leg["mid_1h"] is None
+    text = paper.report(app.store, app.cfg)
+    assert "price after buying (mid move per contract, + is good): 15m +4.0¢ (n=1)" in text
+    app.clock.now += 50 * 60  # 66 minutes in
+    app.scan_once()
+    assert book(app, "strict")[0]["legs"][0]["mid_1h"] == D("0.89")
+    assert "15m +4.0¢ (n=1) · 1h +4.0¢ (n=1)" in paper.report(app.store, app.cfg)
+
+
+def test_a_late_pass_leaves_a_horizon_blank(ladder, tmp_path):
+    app, _, _ = make_app(ladder, tmp_path)
+    app.scan_once()
+    app.clock.now += 40 * 60  # past twice 15 minutes: no longer a 15-minute price
+    app.scan_once()
+    leg = book(app, "strict")[0]["legs"][0]
+    assert leg["mid_15m"] is None and leg["mid_1h"] is None
+
+
+def test_paper_legs_from_before_the_price_columns(tmp_path):
+    conn = sqlite3.connect(tmp_path / "t.sqlite3")
+    conn.execute("CREATE TABLE paper_legs (id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER NOT NULL, "
+                 "ticker TEXT NOT NULL, side TEXT NOT NULL, count INTEGER NOT NULL, price TEXT NOT NULL, "
+                 "cost TEXT NOT NULL, mark TEXT, status TEXT NOT NULL DEFAULT 'open', exit_price TEXT, "
+                 "payout TEXT, closed_at REAL)")
+    conn.commit()
+    conn.close()
+    Store(str(tmp_path / "t.sqlite3"))
+    have = {r[1] for r in sqlite3.connect(tmp_path / "t.sqlite3").execute("PRAGMA table_info(paper_legs)")}
+    assert {"entry_mid", "mid_15m", "mid_1h", "mid_4h"} <= have
