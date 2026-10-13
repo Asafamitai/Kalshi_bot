@@ -62,6 +62,8 @@ def main(argv=None) -> int:
     bt.add_argument("--max-markets", type=int, default=3000)
     bt.add_argument("--series", default=None, help="only this series ticker, e.g. KXBTCD")
     bt.add_argument("--csv", default=None, help="write every simulated trade to this CSV")
+    bt.add_argument("--include-early-closes", action="store_true",
+                    help="also score markets that closed early (look-ahead bias: the live bot can't see these coming)")
 
     rp = sub.add_parser("report", help="summarize a trade ledger")
     rp.add_argument("--ledger", default="data/paper_trades.json")
@@ -79,7 +81,8 @@ def main(argv=None) -> int:
 
     if args.cmd == "backtest":
         print(run_backtest(client, args.hours, params, stake=args.stake, max_markets=args.max_markets,
-                           series=args.series, csv_path=args.csv))
+                           series=args.series, csv_path=args.csv,
+                           include_early_closes=args.include_early_closes))
         return 0
 
     if args.live:

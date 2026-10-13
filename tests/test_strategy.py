@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from kalshi_bot.backtest import simulate_entry
+from kalshi_bot.backtest import closed_on_schedule, simulate_entry
 from kalshi_bot.ledger import Ledger, settlement_payout
 from kalshi_bot.strategy import (Candidate, StrategyParams, evaluate_market, find_candidates,
                                  net_profit_if_win, size_order, taker_fee)
@@ -118,3 +118,8 @@ def test_backtest_takes_first_qualifying_minute():
     ]
     t = simulate_entry(m, candles, P, stake=10)
     assert t["side"] == "no" and t["price"] == 0.90 and t["seconds_to_close"] == 240 and t["won"]
+
+
+def test_early_close_detection():
+    assert closed_on_schedule({"close_time": "2026-10-13T09:00:00Z"})
+    assert not closed_on_schedule({"close_time": "2026-10-13T08:38:26Z"})

@@ -30,8 +30,9 @@ actual result. The output shows win rate vs. breakeven and P&L per price bucket
 (85–89¢, 90–94¢, 95–99¢) and per series.
 
 Caveats: minute-close quotes are only approximate, book depth is unknown (full
-fills are assumed), and markets that closed *early* (for example, a game that
-ended) look like they were always going to close then.
+fills are assumed). Markets that closed *early* (for example, a tennis match that
+ended) are skipped by default: the live bot can't see those coming, and including
+them inflates results (`--include-early-closes` to see them anyway).
 
 ## 2. Paper trade on live prices
 

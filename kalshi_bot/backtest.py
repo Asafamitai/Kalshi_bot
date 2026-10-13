@@ -7,8 +7,10 @@ strategy would have bought. Then score that entry against the real result.
 Limits of this approximation:
 - Quotes are minute-close snapshots; real fills could be worse.
 - Book depth is unknown, so every entry is assumed to fill in full.
-- Markets that closed *early* (e.g. a game ended) look like they were always
-  going to close then, which the live bot could not have known.
+- Markets that closed *early* (e.g. a match ended) look like they were always
+  going to close then, which the live bot could not have known. Scheduled
+  closes land on a whole minute while early closes almost never do, so by
+  default markets whose close time has non-zero seconds are skipped.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import csv
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -33,6 +36,10 @@ def series_of(event_ticker: str) -> str:
 def candle_quote(candle: dict, side: str) -> float | None:
     value = (candle.get(side) or {}).get("close_dollars")
     return None if value is None else to_float(value)
+
+
+def closed_on_schedule(market: dict) -> bool:
+    return parse_time(market["close_time"]).second == 0
 
 
 def simulate_entry(market: dict, candles: list[dict], p: StrategyParams, stake: float) -> dict | None:
@@ -78,34 +85,39 @@ def simulate_entry(market: dict, candles: list[dict], p: StrategyParams, stake: 
 
 def run_backtest(client: KalshiClient, hours: float, p: StrategyParams, stake: float = 10.0,
                  max_markets: int = 3000, series: str | None = None, min_volume: float = 1.0,
-                 csv_path: str | None = None, pause: float = 0.06) -> str:
+                 csv_path: str | None = None, workers: int = 8,
+                 include_early_closes: bool = False) -> str:
     end = int(time.time())
     start = end - int(hours * 3600)
     markets = []
     for m in client.iter_markets(status="settled", min_settled_ts=start, max_settled_ts=end,
                                  mve_filter="exclude", series_ticker=series):
         if (m.get("result") in ("yes", "no") and m.get("market_type", "binary") == "binary"
-                and to_float(m.get("volume_fp")) >= min_volume):
+                and to_float(m.get("volume_fp")) >= min_volume
+                and (include_early_closes or closed_on_schedule(m))):
             markets.append(m)
         if len(markets) >= max_markets:
             break
     log.info("backtesting %d settled markets from the last %.1fh", len(markets), hours)
 
-    trades, skipped = [], 0
-    for i, m in enumerate(markets, 1):
+    def fetch(m: dict) -> list[dict] | None:
         close_ts = int(parse_time(m["close_time"]).timestamp())
         try:
-            candles = client.get_candlesticks(series_of(m["event_ticker"]), m["ticker"],
-                                              close_ts - p.max_seconds_to_close - 60, close_ts)
+            return client.get_candlesticks(series_of(m["event_ticker"]), m["ticker"],
+                                           close_ts - p.max_seconds_to_close - 60, close_ts)
         except KalshiError as e:
-            skipped += 1
             log.debug("no candles for %s: %s", m["ticker"], e)
-            continue
-        if (t := simulate_entry(m, candles, p, stake)):
-            trades.append(t)
-        if i % 200 == 0:
-            log.info("  %d/%d markets, %d entries so far", i, len(markets), len(trades))
-        time.sleep(pause)
+            return None
+
+    trades, skipped = [], 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for i, (m, candles) in enumerate(zip(markets, pool.map(fetch, markets)), 1):
+            if candles is None:
+                skipped += 1
+            elif (t := simulate_entry(m, candles, p, stake)):
+                trades.append(t)
+            if i % 500 == 0:
+                log.info("  %d/%d markets, %d entries so far", i, len(markets), len(trades))
 
     if csv_path and trades:
         with open(csv_path, "w", newline="") as f:
