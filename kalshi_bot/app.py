@@ -25,22 +25,26 @@ HELP = (
     "/status · מצב הסריקה והמסחר\n"
     "/trading on · הפעלת קנייה אמיתית בלחיצה\n"
     "/trading off · כיבוי (ברירת המחדל): לחיצה רק מראה מה הייתה קונה\n"
-    "/auto on · מסחר אוטומטי בכסף אמיתי לפי האסטרטגיה המחמירה\n"
-    "/auto off · כיבוי המסחר האוטומטי (ברירת המחדל)\n"
-    "/live · מצב המסחר האוטומטי: פוזיציות, רווח והפסד ותקציב\n"
-    "/subaccount · תת-החשבון של המסחר האוטומטי (KALSHI_LADDER_AUTO_BOT) והיתרות\n"
-    "/subaccount create · פתיחת תת-החשבון ב-Kalshi\n"
-    "/subaccount fund 100 · העברת $100 מהחשבון הראשי לתת-החשבון\n"
-    "/subaccount withdraw 100 · החזרת $100 מתת-החשבון לחשבון הראשי\n"
     "/report · כמה זמן סתירות שורדות ואיזו מדרגה זזה כשנסגרו\n"
     "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
 )
 
-PAPER_HELP = (
-    "<b>בוט המסחר על נייר</b>\n"
-    "אחרי כל סבב סריקה: מה נקנה, נמכר והוכרע.\n"
-    "/paper · מצב שני התיקים: מדרגה בודדת מול זוג נעול"
+# KALSHI_LADDER_AUTO_BOT: automatic trading with real money, and its twin on paper.
+AUTO_HELP = (
+    "<b>בוט המסחר האוטומטי</b>\n"
+    "אחרי כל סבב סריקה: מה נקנה, נמכר והוכרע, בכסף אמיתי ועל נייר.\n"
+    "/auto on · מסחר אוטומטי בכסף אמיתי לפי האסטרטגיה המחמירה\n"
+    "/auto off · כיבוי המסחר האוטומטי (ברירת המחדל)\n"
+    "/live · מצב המסחר האוטומטי: פוזיציות, רווח והפסד ותקציב\n"
+    "/status · האם המסחר האוטומטי פעיל, איפה, וכמה נשאר בתקציב\n"
+    "/subaccount · תת-החשבון של המסחר האוטומטי (KALSHI_LADDER_AUTO_BOT) והיתרות\n"
+    "/subaccount create · פתיחת תת-החשבון ב-Kalshi\n"
+    "/subaccount fund 100 · העברת $100 מהחשבון הראשי לתת-החשבון\n"
+    "/subaccount withdraw 100 · החזרת $100 מתת-החשבון לחשבון הראשי\n"
+    "/paper · תיקי המסחר על נייר"
 )
+
+MOVED = "המסחר האוטומטי עבר לבוט KALSHI_LADDER_AUTO_BOT: /auto, /live, /status ו-/subaccount שם."
 
 
 class App:
@@ -60,7 +64,8 @@ class App:
         self.trade_client = trade_client
         self.telegram = telegram
         self.clock = clock
-        # Paper trading's own bot, if it has one; /paper also works on the main bot.
+        # KALSHI_LADDER_AUTO_BOT, if configured: automatic trading (real money) and paper trading.
+        # Without it automatic trading can't be switched on; /paper also works on the alert bot.
         self.paper_telegram = paper_telegram
 
     def scan_once(self) -> list[Violation]:
@@ -133,15 +138,15 @@ class App:
             log.exception("could not send the paper trading update")
 
     def send_live(self, done: dict) -> None:
-        """What automatic trading did this pass, to the alert bot; a failed send never stops the scan."""
+        """What automatic trading did this pass, to KALSHI_LADDER_AUTO_BOT; a failed send never stops the scan."""
         try:
             text = live.pass_message(self.store, self.cfg, done)
             if text is None:
                 return
-            if self.telegram is None:
+            if self.paper_telegram is None:
                 log.info("LIVE %s", text)
             else:
-                self.telegram.send(self.cfg.telegram_chat_id, text)
+                self.paper_telegram.send(self.cfg.paper_telegram_chat_id, text)
         except Exception:
             log.exception("could not send the automatic trading update")
 
@@ -154,10 +159,19 @@ class App:
         words = (msg.get("text") or "").strip().split()
         if not words:
             return
-        if words[0].split("@")[0].lower() == "/paper":
+        command = words[0].split("@")[0].lower()
+        if command == "/paper":
             reply = f"<pre>{escape(paper.report(self.store, self.cfg))}</pre>"
+        elif command == "/auto" and len(words) > 1 and words[1].lower() in ("on", "off"):
+            reply = self.auto_command(words[1].lower())
+        elif command == "/live":
+            reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
+        elif command == "/status":
+            reply = self.auto_status_text()
+        elif command == "/subaccount":
+            reply = self.subaccount_command(words[1:])
         else:
-            reply = PAPER_HELP
+            reply = AUTO_HELP
         self.paper_telegram.send(self.cfg.paper_telegram_chat_id, reply)
 
     def handle_message(self, msg: dict) -> None:
@@ -174,21 +188,8 @@ class App:
                 self.store.set_setting("trading", words[1].lower())
                 reply = "✅ המסחר הופעל: לחיצה על כפתור קונה באמת." if words[1].lower() == "on" \
                     else "⏸ המסחר כובה: לחיצה רק תראה מה הייתה קונה."
-        elif command == "/auto" and len(words) > 1 and words[1].lower() in ("on", "off"):
-            if words[1].lower() == "on" and not self.trade_client.can_trade:
-                reply = "אין מפתח Kalshi בסביבה, אז המסחר האוטומטי נשאר כבוי."
-            elif words[1].lower() == "on":
-                self.store.set_setting("auto", "on")
-                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי {self._where()}, עד "
-                         f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.\n"
-                         + self._live_cash())
-            else:
-                self.store.set_setting("auto", "off")
-                reply = "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
-        elif command == "/subaccount":
-            reply = self.subaccount_command(words[1:])
-        elif command == "/live":
-            reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
+        elif command in ("/auto", "/live", "/subaccount"):
+            reply = MOVED
         elif command == "/status":
             reply = self.status_text()
         elif command == "/report":
@@ -199,6 +200,17 @@ class App:
             reply = HELP
         self.telegram.send(self.cfg.telegram_chat_id, reply)
 
+    def auto_command(self, state: str) -> str:
+        if state == "off":
+            self.store.set_setting("auto", "off")
+            return "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
+        if not self.trade_client.can_trade:
+            return "אין מפתח Kalshi בסביבה, אז המסחר האוטומטי נשאר כבוי."
+        self.store.set_setting("auto", "on")
+        return (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי {self._where()}, עד "
+                f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.\n"
+                + self._live_cash())
+
     def subaccount_command(self, args: list[str]) -> str:
         action = args[0].lower() if args else ""
         if action == "create":
@@ -208,7 +220,7 @@ class App:
         elif not action:
             text = subaccounts.show(self.store, self.trade_client, self.cfg)
         else:
-            return HELP
+            return AUTO_HELP
         return escape(text)
 
     def _where(self) -> str:
@@ -227,11 +239,7 @@ class App:
     def status_text(self) -> str:
         last = self.store.last_scan()
         now = self.clock()
-        lines = [f"מסחר בלחיצה: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>",
-                 f"מסחר אוטומטי (מחמירה, כסף אמיתי): <b>{'פעיל' if self.store.auto_on else 'כבוי'}</b>"
-                 f" {self._where()}"
-                 f" · נשאר בתקציב ${live.budget_left(self.store.live_positions(), self.cfg.live_budget):,.2f}"
-                 f" מתוך ${self.cfg.live_budget:,.2f}"]
+        lines = [f"מסחר בלחיצה: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>"]
         if last:
             lines.append(
                 f"סריקה אחרונה: לפני {(now - last['at']) / 60:.0f} דק׳, {last['markets']:,} שווקים, "
@@ -240,6 +248,20 @@ class App:
         else:
             lines.append("עוד לא הייתה סריקה.")
         lines.append(f"התראות ב-24 השעות האחרונות: {self.store.sent_since(now - 86400)}")
+        return "\n".join(lines)
+
+    def auto_status_text(self) -> str:
+        """KALSHI_LADDER_AUTO_BOT's /status: whether automatic trading is on, where, and what is left."""
+        positions = self.store.live_positions()
+        lines = [f"מסחר אוטומטי (מחמירה, כסף אמיתי): <b>{'פעיל' if self.store.auto_on else 'כבוי'}</b> {self._where()}",
+                 f"נשאר בתקציב ${live.budget_left(positions, self.cfg.live_budget):,.2f} מתוך "
+                 f"${self.cfg.live_budget:,.2f} · עד ${self.cfg.live_max_trade:,.2f} לעסקה · "
+                 f"{sum(p['status'] == 'open' for p in positions)} פוזיציות פתוחות"]
+        last = self.store.last_scan()
+        if last:
+            lines.append(f"סריקה אחרונה: לפני {(self.clock() - last['at']) / 60:.0f} דק׳")
+        else:
+            lines.append("עוד לא הייתה סריקה.")
         return "\n".join(lines)
 
     def handle_callback(self, cb: dict) -> None:

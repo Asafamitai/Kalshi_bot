@@ -65,7 +65,7 @@ python -m kalshi_bot paper           # the paper trading books
 python -m kalshi_bot live            # automatic trading with real money
 python -m kalshi_bot subaccount      # its Kalshi subaccount: show, create, fund 100, withdraw 100
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
-python -m kalshi_bot telegram-chats --paper  # the same for the paper trading bot
+python -m kalshi_bot telegram-chats --paper  # the same for KALSHI_LADDER_AUTO_BOT
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
 ```
 
@@ -132,10 +132,13 @@ can press buttons or send commands; anyone else gets silence.
 
 ### Automatic trading with real money
 
-The strict paper book's strategy, traded for real. **Off by default**:
-`/auto on` in the alert bot switches it on (it needs a Kalshi key), `/auto off`
-switches it off. It is separate from `/trading`, which only governs the buy
-buttons.
+The strict paper book's strategy, traded for real. It lives in its own
+Telegram bot, `KALSHI_LADDER_AUTO_BOT` (the same bot as paper trading, below;
+the alert bot keeps only alerts, their buy buttons, `/trading`, `/status` and
+`/report`). **Off by default**: `/auto on` in KALSHI_LADDER_AUTO_BOT switches
+it on (it needs a Kalshi key), `/auto off` switches it off. It is separate
+from `/trading`, which only governs the alert bot's buy buttons. Without that
+bot configured it can't be switched on.
 
 While on, every pass buys what the strict book would buy (its filters, its
 second read of both rungs, at most one position per event), with real orders:
@@ -184,13 +187,15 @@ accepts that subaccount.
 
 With it off, no order of any kind is sent, but what is held is still marked
 at its bid and recorded when its market settles. After every pass that
-bought, closed or hit a problem, the alert bot gets one message in Hebrew;
-`/live` (or `python -m kalshi_bot live`) shows the positions, P&L and what
-is left of the budget, and `/status` says whether it is on.
+bought, closed or hit a problem, KALSHI_LADDER_AUTO_BOT gets one message in
+Hebrew; `/live` there (or `python -m kalshi_bot live`) shows the positions,
+P&L and what is left of the budget, and `/status` there says whether it is
+on, in which account, and what is left.
 
-To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`
-and `LIVE_BUDGET`, and restart. Then, for a subaccount of its own,
-`/subaccount create` and `/subaccount fund 100`; and `/auto on`.
+To start: connect KALSHI_LADDER_AUTO_BOT (below), set `KALSHI_API_KEY_ID` and
+the private key, choose `LIVE_MAX_TRADE` and `LIVE_BUDGET`, and restart. Then,
+in KALSHI_LADDER_AUTO_BOT, for a subaccount of its own, `/subaccount create`
+and `/subaccount fund 100`; and `/auto on`.
 
 ### Paper trading
 
@@ -246,22 +251,25 @@ single book did on the trades that passed the alert filters and on those where
 a pair was also available, the average move of the mid after buying for
 single and strict, and the latest trades.
 
-#### Its own Telegram bot
+#### KALSHI_LADDER_AUTO_BOT, its own Telegram bot
 
-Paper trading can have a bot of its own, so its messages stay apart from the
-alerts. After every pass that bought, sold or settled anything, that bot sends
+Paper trading shares a bot with automatic trading, apart from the alerts: the
+strict paper book is the automatic strategy's twin. After every pass that
+bought, sold or settled anything on paper, that bot sends
 one message, in Hebrew: each trade bought (contracts, price, cost, saving,
 and whether it also passed the alert filters, or the locked minimum for a
 pair), each trade closed with its P&L, and each book's cash. A long pass is
-split under Telegram's message limit. `/paper` there gives the report; any
-other message gets a short help. Only `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS`
+split under Telegram's message limit. `/paper` there gives the report, beside
+the automatic trading commands (`/auto`, `/live`, `/status`, `/subaccount`);
+any other message gets a short help. Only `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS`
 (default: its chat id) are answered.
 
 To connect one: create a bot with @BotFather, set
 `KALSHI_LADDER_AUTO_BOT_TOKEN`, write to the new bot once, run
 `python -m kalshi_bot telegram-chats --paper` to find your chat id, set
-`KALSHI_LADDER_AUTO_BOT_CHAT_ID`, and restart. Without it nothing changes:
-paper trading runs silently and `/paper` works on the alert bot.
+`KALSHI_LADDER_AUTO_BOT_CHAT_ID`, and restart. Without it, paper trading runs
+silently, `/paper` works on the alert bot, and automatic trading can't be
+switched on.
 
 ### Running in a Claude Code cloud session
 
@@ -280,7 +288,7 @@ belongs to another project in the same environment is never picked up.
 |---|---|---|
 | `KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY` (or `_PATH`) | – | Only for buying. RSA or Ed25519. |
 | `KALSHI_LADDER_BOT_TOKEN`, `KALSHI_LADDER_BOT_CHAT_ID` | – | Without them, alerts go to the log. |
-| `KALSHI_LADDER_AUTO_BOT_TOKEN`, `KALSHI_LADDER_AUTO_BOT_CHAT_ID` | – | Paper trading's own bot (optional). |
+| `KALSHI_LADDER_AUTO_BOT_TOKEN`, `KALSHI_LADDER_AUTO_BOT_CHAT_ID` | – | The bot for automatic trading and paper trading; automatic trading needs it. |
 | `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS` | its chat id | Who that bot answers. |
 | `SCAN_INTERVAL_SECONDS` | 300 | |
 | `MIN_SAVING` | 0.01 | Tracked: saving against the dominated mid. |

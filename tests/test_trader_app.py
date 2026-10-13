@@ -347,7 +347,6 @@ def test_status_command(ladder, tmp_path):
     app.scan_once()
     say(app, "/status")
     assert "מסחר בלחיצה: <b>כבוי</b>" in tg.sent[-1][0] and "2 סתירות" in tg.sent[-1][0]
-    assert "מסחר אוטומטי (מחמירה, כסף אמיתי): <b>כבוי</b>" in tg.sent[-1][0]
 
 
 # Episodes

@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> None:
     acct.add_argument("amount", nargs="?", help="dollars, for fund and withdraw")
     chats = sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     chats.add_argument("--paper", action="store_true",
-                       help="the paper trading bot instead, to find KALSHI_LADDER_AUTO_BOT_CHAT_ID")
+                       help="the automatic trading bot instead, to find KALSHI_LADDER_AUTO_BOT_CHAT_ID")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -108,14 +108,17 @@ def main(argv: list[str] | None = None) -> None:
         paper_telegram = None
         if cfg.paper_telegram and cfg.paper_telegram_token == cfg.telegram_token:
             # Two readers of one bot's updates make Telegram refuse both.
-            log.warning("KALSHI_LADDER_AUTO_BOT_TOKEN is the alert bot's token: paper trading needs a bot of its own")
+            log.warning("KALSHI_LADDER_AUTO_BOT_TOKEN is the alert bot's token: automatic trading needs a bot of its own")
         elif cfg.paper_telegram:
             paper_telegram = Telegram(cfg.paper_telegram_token)
         store = Store(cfg.db_path)
+        if store.auto_on and paper_telegram is None:
+            log.warning("automatic trading is on but KALSHI_LADDER_AUTO_BOT is not configured: "
+                        "its messages go to this log, and it can't be switched off from Telegram")
         account = subaccounts.number(store, cfg)
         log.info(
             "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, auto %s (budget %s, "
-            "%s a trade, subaccount %s), paper %s, telegram %s, paper telegram %s",
+            "%s a trade, subaccount %s), paper %s, telegram %s, auto telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
             "on" if store.trading_on else "off", "on" if store.auto_on else "off", cfg.live_budget,
             cfg.live_max_trade, account, "on" if cfg.paper_trading else "off", "on" if telegram else "off",

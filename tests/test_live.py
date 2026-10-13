@@ -2,7 +2,9 @@ from decimal import Decimal
 
 import pytest
 import requests
-from test_trader_app import Clock, FakeKalshi, FakeTelegram, button, make_app, say, tap
+from test_trader_app import Clock, FakeKalshi, FakeTelegram, button, tap
+from test_trader_app import make_app as make_alert_app
+from test_trader_app import say as say_to_alert_bot
 
 from kalshi_bot import live
 from kalshi_bot.app import App
@@ -11,6 +13,20 @@ from kalshi_bot.kalshi import KalshiError
 from kalshi_bot.store import Store
 
 D = Decimal
+
+
+def make_app(markets, tmp_path, can_trade=True, **cfg):
+    """Both bots; returns KALSHI_LADDER_AUTO_BOT's, where automatic trading lives (the alert bot is app.telegram)."""
+    app, client, _ = make_alert_app(markets, tmp_path, can_trade=can_trade, paper_telegram_token="tok",
+                                    paper_telegram_chat_id="77", paper_telegram_allowed_user_ids=frozenset({"77"}),
+                                    **cfg)
+    app.paper_telegram = FakeTelegram()
+    return app, client, app.paper_telegram
+
+
+def say(app, text, user="77"):
+    """A message to KALSHI_LADDER_AUTO_BOT."""
+    app.handle_paper_message({"from": {"id": int(user)}, "chat": {"id": 77}, "text": text})
 
 
 @pytest.fixture
@@ -66,8 +82,31 @@ def test_auto_on_and_off(ladder, tmp_path):
 
 def test_strangers_cannot_switch_it_on(ladder, tmp_path):
     app, _, tg = make_app(ladder, tmp_path)
-    say(app, "/auto on", user="7")
+    say(app, "/auto on", user="42")  # the alert bot's user isn't this bot's
     assert not app.store.auto_on and tg.sent == []
+
+
+def test_the_alert_bot_points_to_the_auto_bot(ladder, tmp_path):
+    app, _, _ = make_app(ladder, tmp_path)
+    for command in ("/auto on", "/live", "/subaccount create"):
+        say_to_alert_bot(app, command)
+        assert "עבר לבוט KALSHI_LADDER_AUTO_BOT" in app.telegram.sent[-1][0]
+    assert not app.store.auto_on
+    say_to_alert_bot(app, "/status")
+    assert "מסחר אוטומטי" not in app.telegram.sent[-1][0]
+
+
+def test_live_messages_go_only_to_the_auto_bot(ladder, tmp_path):
+    app, _, tg = auto_app(ladder, tmp_path)
+    app.scan_once()
+    assert len(live_messages(tg)) == 1 and live_messages(app.telegram) == []
+    assert len([t for t, _ in app.telegram.sent if "אפשרות חדשה" in t]) == 1  # alerts stay on the alert bot
+
+
+def test_auto_bot_help(ladder, tmp_path):
+    app, _, tg = make_app(ladder, tmp_path)
+    say(app, "hi")
+    assert "בוט המסחר האוטומטי" in tg.sent[-1][0] and "/auto on" in tg.sent[-1][0] and "/paper" in tg.sent[-1][0]
 
 
 # Buying
@@ -243,7 +282,8 @@ def test_live_command_and_status(ladder, tmp_path):
     assert "Automatic trading (strict, real money): ON" in tg.sent[-1][0]
     assert "11 NO APP-T195 @0.86" in tg.sent[-1][0]
     say(app, "/status")
-    assert "מסחר אוטומטי (מחמירה, כסף אמיתי): <b>פעיל</b>" in tg.sent[-1][0]
+    assert "מסחר אוטומטי (מחמירה, כסף אמיתי): <b>פעיל</b> בחשבון הראשי" in tg.sent[-1][0]
+    assert "נשאר בתקציב $90.44 מתוך $100.00" in tg.sent[-1][0] and "1 פוזיציות פתוחות" in tg.sent[-1][0]
 
 
 def test_a_failing_step_does_not_stop_the_scan(ladder, tmp_path, monkeypatch):
@@ -291,9 +331,9 @@ def test_everything_happens_in_the_subaccount(ladder, mk, tmp_path):
 
 def test_buy_buttons_stay_in_the_primary_account(ladder, tmp_path):
     app, client, tg = make_app(ladder, tmp_path, live_subaccount=3)
-    say(app, "/trading on")
+    say_to_alert_bot(app, "/trading on")
     app.scan_once()
-    tap(app, button(tg, "קנה 10"))
+    tap(app, button(app.telegram, "קנה 10"))
     assert ("buy", 0) in client.subaccounts and ("buy", 3) not in client.subaccounts
 
 

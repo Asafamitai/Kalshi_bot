@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 import requests
-from test_trader_app import make_app, say
+from test_live import make_app, say
 
 from kalshi_bot import __main__ as cli
 from kalshi_bot import subaccounts
@@ -105,7 +105,7 @@ def test_needs_a_kalshi_key(ladder, tmp_path):
 
 def test_strangers_get_silence(ladder, tmp_path):
     app, client, tg = make_app(ladder, tmp_path)
-    say(app, "/subaccount create", user="7")
+    say(app, "/subaccount create", user="42")  # the alert bot's user isn't this bot's
     assert tg.sent == [] and not getattr(client, "created", 0)
 
 
