@@ -121,6 +121,31 @@ CREATE TABLE IF NOT EXISTS paper_legs (
     mid_1h TEXT,
     mid_4h TEXT
 );
+-- Automatic trading with real money: the strict strategy, one row per position bought.
+CREATE TABLE IF NOT EXISTS live_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opened_at REAL NOT NULL,
+    event TEXT NOT NULL,
+    side TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    dominated TEXT NOT NULL,
+    saving TEXT NOT NULL,
+    -- contracts filled, and how many of them are still held
+    bought INTEGER NOT NULL,
+    count INTEGER NOT NULL,
+    -- average fill, and what the fill cost with the fee
+    price TEXT NOT NULL,
+    cost TEXT NOT NULL,
+    entry_mid TEXT,
+    mark TEXT,
+    -- what came back so far, from sales and settlement
+    proceeds TEXT NOT NULL DEFAULT '0',
+    status TEXT NOT NULL DEFAULT 'open',
+    -- sold | settled | missing (no longer held on Kalshi)
+    exit_reason TEXT,
+    closed_at REAL,
+    order_id TEXT
+);
 """
 
 # Columns added after a table was first released; an older database gets them on open.
@@ -261,6 +286,11 @@ class Store:
     def trading_on(self) -> bool:
         return self.get_setting("trading", "off") == "on"
 
+    @property
+    def auto_on(self) -> bool:
+        """Automatic trading with real money; off until /auto on."""
+        return self.get_setting("auto", "off") == "on"
+
     def log_order(self, alert_id: int, ticker: str, side: str, count: int, price: Decimal,
                   client_order_id: str, result: dict) -> None:
         self._write(
@@ -339,3 +369,45 @@ class Store:
                 leg[k] = Decimal(leg[k]) if leg[k] is not None else None
             trades[leg["trade_id"]]["legs"].append(leg)
         return list(trades.values())
+
+    # Automatic trading with real money.
+
+    def add_live_position(self, v: Violation, count: int, price: Decimal, cost: Decimal, mid: Decimal,
+                          order_id: str | None, at: float) -> int:
+        cur = self._write(
+            "INSERT INTO live_positions (opened_at, event, side, ticker, dominated, saving, bought, count, price, cost, "
+            "entry_mid, order_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (at, v.safer.event_ticker, v.side, v.safer.ticker, v.dominated.ticker, str(v.saving), count, count,
+             str(price), str(cost), str(mid), order_id),
+        )
+        return cur.lastrowid
+
+    def live_positions(self) -> list[dict]:
+        """Every live position, oldest first."""
+        cols = ["id", "opened_at", "event", "side", "ticker", "dominated", "saving", "bought", "count", "price", "cost",
+                "entry_mid", "mark", "proceeds", "status", "exit_reason", "closed_at", "order_id"]
+        out = []
+        for r in self._read(f"SELECT {', '.join(cols)} FROM live_positions ORDER BY id"):
+            p = dict(zip(cols, r))
+            for k in ("saving", "price", "cost", "entry_mid", "mark", "proceeds"):
+                p[k] = Decimal(p[k]) if p[k] is not None else None
+            out.append(p)
+        return out
+
+    def set_live_marks(self, marks: dict[int, Decimal]) -> None:
+        with self._lock, self._conn:
+            self._conn.executemany("UPDATE live_positions SET mark = ? WHERE id = ?",
+                                   [(str(m), pid) for pid, m in marks.items()])
+
+    def reduce_live_position(self, pid: int, count: int, proceeds: Decimal, how: str, at: float) -> bool:
+        """`count` contracts left the position, bringing `proceeds`; True if that closed it."""
+        with self._lock, self._conn:
+            (left, before), = self._conn.execute("SELECT count, proceeds FROM live_positions WHERE id = ?", (pid,))
+            left = max(0, left - count)
+            self._conn.execute(
+                "UPDATE live_positions SET count = ?, proceeds = ?, status = ?, exit_reason = ?, closed_at = ? "
+                "WHERE id = ?",
+                (left, str(Decimal(before) + proceeds), "open" if left else "closed", None if left else how,
+                 None if left else at, pid),
+            )
+            return left == 0

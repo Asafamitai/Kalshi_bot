@@ -23,6 +23,12 @@ class FakeKalshi:
         self.orders = []
         self.can_trade = can_trade
         self.cash = D("1000")
+        # The subaccount each order, balance and position read went to.
+        self.subaccounts = []
+        # Contracts held per (ticker, side); what an order raises instead of filling; how many it fills.
+        self.held = {}
+        self.order_error = None
+        self.fill = None
 
     def iter_open_markets(self):
         source = self.scan_markets if self.scan_markets is not None else self.markets
@@ -31,12 +37,40 @@ class FakeKalshi:
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
 
-    def balance(self):
+    def balance(self, subaccount=0):
+        self.subaccounts.append(("balance", subaccount))
         return self.cash
 
-    def buy(self, ticker, side, count, limit_price, client_order_id):
+    def buy(self, ticker, side, count, limit_price, client_order_id, subaccount=0):
         self.orders.append((ticker, side, count, limit_price, client_order_id))
-        return {"already": False, "order_id": "o1", "filled": D(count), "avg_price": limit_price}
+        self.subaccounts.append(("buy", subaccount))
+        return self._fill(ticker, side, count, limit_price, 1)
+
+    def sell(self, ticker, side, count, limit_price, client_order_id, subaccount=0):
+        self.orders.append(("sell", ticker, side, count, limit_price, client_order_id))
+        self.subaccounts.append(("sell", subaccount))
+        return self._fill(ticker, side, count, limit_price, -1)
+
+    def _fill(self, ticker, side, count, limit_price, sign):
+        if self.order_error is not None:
+            raise self.order_error
+        filled = D(count if self.fill is None else min(count, self.fill))
+        self.held[(ticker, side)] = self.held.get((ticker, side), D(0)) + sign * filled
+        return {"already": False, "order_id": "o1", "filled": filled, "avg_price": limit_price}
+
+    def create_subaccount(self):
+        self.created = getattr(self, "created", 0) + 1
+        return self.created
+
+    def transfer(self, from_subaccount, to_subaccount, dollars, transfer_id):
+        if self.order_error is not None:
+            raise self.order_error
+        self.transfers = getattr(self, "transfers", []) + [(from_subaccount, to_subaccount, dollars)]
+        return {}
+
+    def position(self, ticker, side, subaccount=0):
+        self.subaccounts.append(("position", subaccount))
+        return self.held.get((ticker, side), D(0))
 
 
 class FakeTelegram:
@@ -312,7 +346,7 @@ def test_status_command(ladder, tmp_path):
     app, _, tg = make_app(ladder, tmp_path)
     app.scan_once()
     say(app, "/status")
-    assert "מסחר: <b>כבוי</b>" in tg.sent[-1][0] and "2 סתירות" in tg.sent[-1][0]
+    assert "מסחר בלחיצה: <b>כבוי</b>" in tg.sent[-1][0] and "2 סתירות" in tg.sent[-1][0]
 
 
 # Episodes

@@ -145,7 +145,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
             age = now - leg["opened_at"]
             markouts += [(col, rung.mid(leg["side"]), leg["id"]) for _, col, after in MARKOUTS
                          if leg[col] is None and after <= age < 2 * after]
-        if leg["strategy"] != PAIR and _take_profit(leg, bid, depth, cfg.paper_take_profit):
+        if leg["strategy"] != PAIR and take_profit(leg, bid, depth, cfg.paper_take_profit):
             proceeds = bid * leg["count"] - order_fee(bid, leg["count"])
             _closed(done, store.close_paper_leg(leg["id"], "sold", bid, proceeds, now))
             done["sold"] += 1
@@ -167,7 +167,7 @@ def _closed(done: dict, trade_id: int | None) -> None:
         done["closed"].append(trade_id)
 
 
-def _take_profit(leg: dict, bid: Decimal, depth: Decimal, share: Decimal) -> bool:
+def take_profit(leg: dict, bid: Decimal, depth: Decimal, share: Decimal) -> bool:
     """The bid holds `share` of the maximum profit and can take the whole position."""
     return bid > ZERO and depth >= leg["count"] and bid - leg["price"] >= share * (ONE - leg["price"])
 

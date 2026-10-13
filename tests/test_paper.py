@@ -411,7 +411,7 @@ def test_paper_bot_commands(ladder, tmp_path):
     app.handle_paper_message({"from": {"id": 77}, "text": "/paper"})
     assert paper_tg.sent[-1][0].startswith("<pre>Paper trading:") and "single: 1 trades" in paper_tg.sent[-1][0]
     app.handle_paper_message({"from": {"id": 77}, "text": "hi"})
-    assert "בוט המסחר על נייר" in paper_tg.sent[-1][0]
+    assert "בוט המסחר האוטומטי" in paper_tg.sent[-1][0]
     sent = len(paper_tg.sent)
     app.handle_paper_message({"from": {"id": 42}, "text": "/paper"})  # the alert bot's user isn't this bot's
     assert len(paper_tg.sent) == sent

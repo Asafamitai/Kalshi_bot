@@ -120,3 +120,70 @@ def test_get_markets_batches_tickers():
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
     client.get_markets([f"T{i}" for i in range(60)])
     assert [len(c["params"]["tickers"].split(",")) for c in session.calls] == [50, 10]
+
+
+@pytest.mark.parametrize("side, book_side, yes_price", [("no", "bid", "0.0200"), ("yes", "ask", "0.9800")])
+def test_sell_mirrors_buy(side, book_side, yes_price):
+    # Selling NO at 0.98 is buying YES at 0.02; selling YES at 0.98 is an ask at 0.98.
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"order_id": "o2", "fill_count": "11.00", "average_fill_price": yes_price})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    result = client.sell("APP-T195", side, 11, Decimal("0.98"), "auto-x")
+    assert session.calls[0]["json"]["side"] == book_side and session.calls[0]["json"]["price"] == yes_price
+    assert result["filled"] == Decimal("11.00") and result["avg_price"] == Decimal("0.98")
+
+
+@pytest.mark.parametrize("body, yes, no", [
+    ({"market_positions": [{"ticker": "APP-T195", "position_fp": "-11.00"}]}, Decimal(0), Decimal(11)),
+    ({"market_positions": [{"ticker": "APP-T195", "position": 4}]}, Decimal(4), Decimal(0)),
+    ({"market_positions": []}, Decimal(0), Decimal(0)),
+    ({"market_positions": [{"ticker": "APP-T195"}]}, None, None),
+])
+def test_position_is_signed_yes_positive(body, yes, no):
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(200, body), FakeResponse(200, body)])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    assert (client.position("APP-T195", "yes"), client.position("APP-T195", "no")) == (yes, no)
+    call = session.calls[0]
+    assert call["url"].endswith("/portfolio/positions") and call["params"] == {"ticker": "APP-T195"}
+    assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
+
+
+def test_subaccount_goes_on_orders_balance_and_positions():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "1.00"}),
+                           FakeResponse(200, {"balance_dollars": "12.50"}),
+                           FakeResponse(200, {"market_positions": []}),
+                           FakeResponse(201, {"order_id": "o2", "fill_count": "0.00"})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    client.buy("APP-T195", "no", 1, Decimal("0.86"), "auto-a", subaccount=3)
+    assert client.balance(subaccount=3) == Decimal("12.50")
+    client.position("APP-T195", "no", subaccount=3)
+    client.buy("APP-T195", "no", 1, Decimal("0.86"), "lk-1-10")  # the primary account: no field at all
+    assert session.calls[0]["json"]["subaccount"] == 3
+    assert session.calls[1]["params"] == {"subaccount": 3}
+    assert session.calls[2]["params"] == {"ticker": "APP-T195", "subaccount": 3}
+    assert "subaccount" not in session.calls[3]["json"]
+
+
+def test_create_subaccount_returns_its_number():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"subaccount_number": 4})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    assert client.create_subaccount() == 4
+    call = session.calls[0]
+    assert call["method"] == "POST" and call["url"].endswith("/portfolio/subaccounts")
+    assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
+
+
+def test_transfer_in_cents_with_an_id():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(200, {})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    client.transfer(0, 4, Decimal("25.50"), "auto-t1")
+    call = session.calls[0]
+    assert call["url"].endswith("/portfolio/subaccounts/transfer")
+    assert call["json"] == {"client_transfer_id": "auto-t1", "from_subaccount": 0, "to_subaccount": 4,
+                            "amount_cents": 2550, "exchange_index": 0}
+    with pytest.raises(ValueError):
+        client.transfer(0, 4, Decimal("0.005"), "auto-t2")
