@@ -94,7 +94,7 @@ def transfer(store: Store, client: KalshiClient, cfg: Config, amount: str, back:
     source, target = (n, 0) if back else (0, n)
     what = f"${dollars:,.2f} {name(source, 'מ')} {name(target, 'ל')}"
     try:
-        client.transfer(source, target, dollars, f"auto-{uuid.uuid4()}")
+        client.transfer(source, target, dollars, str(uuid.uuid4()))  # Kalshi takes a bare UUID only
     except KalshiError as e:
         if e.status >= 500:
             return f"⚠️ לא ברור אם העברת {what} בוצעה: {e}. בדוק עם /subaccount לפני שמנסים שוב."

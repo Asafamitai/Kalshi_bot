@@ -131,8 +131,9 @@ class KalshiClient:
     def transfer(self, from_subaccount: int, to_subaccount: int, dollars: Decimal, transfer_id: str) -> dict:
         """Move cash between two subaccounts (0 is the primary account).
 
-        Kalshi applies one `transfer_id` once: a repeat answers 409, so the
-        429 retry in _request can't move the money twice.
+        Kalshi applies one `transfer_id` (a bare UUID; anything else is a 400)
+        once: a repeat answers 409, so the 429 retry in _request can't move the
+        money twice.
         """
         cents = dollars * 100
         if cents != cents.to_integral_value() or cents <= 0:
