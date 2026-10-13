@@ -252,6 +252,24 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
 _EXITS = {"sold": "נמכר ביעד הרווח", "settled": "הוכרע", "missing": "לא נמצא ב-Kalshi"}
 
 
+def _link(p: dict) -> str:
+    """The position's ticker, linked to its event on Kalshi."""
+    return f'<a href="{escape(event_url(p["event"]))}">{escape(p["ticker"])}</a>'
+
+
+def open_positions_html(store: Store) -> str:
+    """The open positions, each linked to its market on Kalshi, for Telegram; "" when there are none."""
+    open_ = [p for p in store.live_positions() if p["status"] == "open"]
+    if not open_:
+        return ""
+    lines = ["<b>פוזיציות פתוחות</b>"]
+    for p in open_:
+        pnl = _value(p) - p["cost"]
+        lines.append(f"• {p['count']} {p['side'].upper()} {_link(p)} ב-{price(p['price'])} · ${p['cost']:,.2f}"
+                     f" · לפי ה-bid {_signed(pnl)}")
+    return "\n".join(lines)
+
+
 def pass_message(store: Store, cfg: Config, done: dict) -> str | None:
     """What a pass bought, closed and couldn't do, ready for Telegram; None when nothing happened."""
     if not done["opened"] and not done["closed"] and not done["problems"]:
@@ -263,15 +281,14 @@ def pass_message(store: Store, cfg: Config, done: dict) -> str | None:
         lines.append("<b>נקנו</b>")
         for i in done["opened"]:
             p = by_id[i]
-            url = escape(event_url(p["event"]))
-            lines.append(f'• {p["bought"]} {p["side"].upper()} <a href="{url}">{escape(p["ticker"])}</a>'
+            lines.append(f'• {p["bought"]} {p["side"].upper()} {_link(p)}'
                          f" ב-{price(p['price'])} · ${p['cost']:,.2f} · חיסכון {p['saving'] * 100:.1f}¢")
     if done["closed"]:
         lines.append("<b>נסגרו</b>")
         for i in done["closed"]:
             p = by_id[i]
             pnl = _value(p) - p["cost"]
-            lines.append(f"• {'✅' if pnl > 0 else '❌'} {escape(p['ticker'])} · {_EXITS[p['exit_reason']]} · "
+            lines.append(f"• {'✅' if pnl > 0 else '❌'} {_link(p)} · {_EXITS[p['exit_reason']]} · "
                          f"<b>{_signed(pnl)}</b>")
     if done["problems"]:
         lines.append("<b>⚠️ בעיות</b>")

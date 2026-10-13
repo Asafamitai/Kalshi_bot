@@ -165,7 +165,8 @@ class App:
         elif command == "/auto" and len(words) > 1 and words[1].lower() in ("on", "off"):
             reply = self.auto_command(words[1].lower())
         elif command == "/live":
-            reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
+            links = live.open_positions_html(self.store)
+            reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>" + (f"\n{links}" if links else "")
         elif command == "/status":
             reply = self.auto_status_text()
         elif command == "/subaccount":
