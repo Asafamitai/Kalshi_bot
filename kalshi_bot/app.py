@@ -173,11 +173,14 @@ class App:
         elif command == "/auto" and len(words) > 1 and words[1].lower() in ("on", "off"):
             if words[1].lower() == "on" and not self.trade_client.can_trade:
                 reply = "אין מפתח Kalshi בסביבה, אז המסחר האוטומטי נשאר כבוי."
+            elif words[1].lower() == "on":
+                self.store.set_setting("auto", "on")
+                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי ב{self._where()}, עד "
+                         f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.\n"
+                         + self._live_cash())
             else:
-                self.store.set_setting("auto", words[1].lower())
-                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי, עד "
-                         f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.") \
-                    if words[1].lower() == "on" else "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
+                self.store.set_setting("auto", "off")
+                reply = "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
         elif command == "/live":
             reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
         elif command == "/status":
@@ -190,11 +193,26 @@ class App:
             reply = HELP
         self.telegram.send(self.cfg.telegram_chat_id, reply)
 
+    def _where(self) -> str:
+        n = self.cfg.live_subaccount
+        return f"תת-חשבון {n}" if n else "חשבון הראשי"
+
+    def _live_cash(self) -> str:
+        """The cash automatic trading can see, which also shows Kalshi accepts its subaccount."""
+        try:
+            cash = self.trade_client.balance(subaccount=self.cfg.live_subaccount)
+        except Exception as e:
+            return f"⚠️ לא הצלחתי לקרוא את היתרה ב{self._where()}: {escape(str(e))}. עד שזה יסתדר לא ייקנה כלום."
+        if cash is None:
+            return f"⚠️ לא הצלחתי לקרוא את היתרה ב{self._where()}. עד שזה יסתדר לא ייקנה כלום."
+        return f"יתרה ב{self._where()}: ${cash:,.2f}"
+
     def status_text(self) -> str:
         last = self.store.last_scan()
         now = self.clock()
         lines = [f"מסחר בלחיצה: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>",
                  f"מסחר אוטומטי (מחמירה, כסף אמיתי): <b>{'פעיל' if self.store.auto_on else 'כבוי'}</b>"
+                 f" ב{self._where()}"
                  f" · נשאר בתקציב ${live.budget_left(self.store.live_positions(), self.cfg.live_budget):,.2f}"
                  f" מתוך ${self.cfg.live_budget:,.2f}"]
         if last:

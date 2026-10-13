@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 import requests
-from test_trader_app import Clock, FakeKalshi, FakeTelegram, make_app, say
+from test_trader_app import Clock, FakeKalshi, FakeTelegram, button, make_app, say, tap
 
 from kalshi_bot import live
 from kalshi_bot.app import App
@@ -59,6 +59,7 @@ def test_auto_on_needs_a_kalshi_key(ladder, tmp_path):
 def test_auto_on_and_off(ladder, tmp_path):
     app, _, tg = auto_app(ladder, tmp_path)
     assert app.store.auto_on and "עד $10.00 לעסקה ועד $100.00 בסך הכול" in tg.sent[-1][0]
+    assert "בחשבון הראשי" in tg.sent[-1][0] and "יתרה בחשבון הראשי: $1,000.00" in tg.sent[-1][0]
     say(app, "/auto off")
     assert not app.store.auto_on
 
@@ -137,7 +138,7 @@ def test_no_buy_when_the_balance_is_short(ladder, tmp_path):
 
 def test_unreadable_balance_buys_nothing(ladder, tmp_path):
     app, client, tg = auto_app(ladder, tmp_path)
-    client.balance = lambda: None
+    client.balance = lambda subaccount=0: None
     app.scan_once()
     assert client.orders == [] and "לא הצלחתי לקרוא את היתרה" in live_messages(tg)[-1]
 
@@ -263,6 +264,42 @@ def test_without_telegram_it_logs(ladder, tmp_path, caplog):
 
 
 def test_live_config():
-    assert (Config.from_env({}).live_max_trade, Config.from_env({}).live_budget) == (D("10"), D("100"))
-    cfg = Config.from_env({"LIVE_MAX_TRADE": "25", "LIVE_BUDGET": "300"})
-    assert (cfg.live_max_trade, cfg.live_budget) == (D("25"), D("300"))
+    d = Config.from_env({})
+    assert (d.live_max_trade, d.live_budget, d.live_subaccount) == (D("10"), D("100"), 0)
+    cfg = Config.from_env({"LIVE_MAX_TRADE": "25", "LIVE_BUDGET": "300", "LIVE_SUBACCOUNT": "3"})
+    assert (cfg.live_max_trade, cfg.live_budget, cfg.live_subaccount) == (D("25"), D("300"), 3)
+    with pytest.raises(ValueError):
+        Config.from_env({"LIVE_SUBACCOUNT": "64"})
+
+
+# Subaccount
+
+
+def test_everything_happens_in_the_subaccount(ladder, mk, tmp_path):
+    app, client, tg = auto_app(ladder, tmp_path, live_subaccount=3)
+    assert "בתת-חשבון 3" in tg.sent[-1][0] and "יתרה בתת-חשבון 3" in tg.sent[-1][0]
+    app.scan_once()
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")
+    app.scan_once()
+    assert {what for what, _ in client.subaccounts} == {"balance", "buy", "position", "sell"}
+    assert {n for _, n in client.subaccounts} == {3}
+    say(app, "/live")
+    assert "in subaccount 3" in tg.sent[-1][0]
+
+
+def test_buy_buttons_stay_in_the_primary_account(ladder, tmp_path):
+    app, client, tg = make_app(ladder, tmp_path, live_subaccount=3)
+    say(app, "/trading on")
+    app.scan_once()
+    tap(app, button(tg, "קנה 10"))
+    assert ("buy", 0) in client.subaccounts and ("buy", 3) not in client.subaccounts
+
+
+def test_auto_on_says_when_the_subaccount_balance_cannot_be_read(ladder, tmp_path):
+    app, client, tg = make_app(ladder, tmp_path, live_subaccount=3)
+
+    def no_such_subaccount(subaccount=0):
+        raise KalshiError(400, "subaccount not found")
+    client.balance = no_such_subaccount
+    say(app, "/auto on")
+    assert "לא הצלחתי לקרוא את היתרה בתת-חשבון 3" in tg.sent[-1][0] and "subaccount not found" in tg.sent[-1][0]

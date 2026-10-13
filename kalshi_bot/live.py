@@ -19,6 +19,10 @@ Safety:
   trading off and says so, so nothing more is bought until someone has
   looked at the account.
 
+Everything it does on Kalshi (orders, the balance, positions) happens in
+LIVE_SUBACCOUNT: 0 is the primary account, 1-63 a numbered subaccount with
+its own cash and positions, which keeps it apart from anything bought by hand.
+
 With automatic trading off, no order of any kind is sent, but what is held is
 still marked at its bid and settled when its market resolves.
 """
@@ -42,6 +46,10 @@ from .ladder import ZERO, Rung, Violation
 from .store import Store
 
 log = logging.getLogger("kalshi_bot")
+
+
+def where(cfg: Config) -> str:
+    return f"subaccount {cfg.live_subaccount}" if cfg.live_subaccount else "the primary account"
 
 
 def budget_left(positions: list[dict], budget: Decimal) -> Decimal:
@@ -68,7 +76,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         bid, depth = (rung.bid(p["side"]), rung.bid_size(p["side"])) if rung else (ZERO, ZERO)
         marks[p["id"]] = bid
         if _trading(store, client) and paper.take_profit(p, bid, depth, cfg.paper_take_profit):
-            _sell(store, client, p, bid, now, done)
+            _sell(store, client, p, bid, cfg.live_subaccount, now, done)
     store.set_live_marks(marks)
     if gone:
         fresh = {m["ticker"]: m for m in client.get_markets(sorted({p["ticker"] for p in gone}))}
@@ -99,13 +107,13 @@ def _unknown(store: Store, done: dict, what: str, e: Exception) -> None:
 
 
 def _send(store: Store, client: KalshiClient, action: str, ticker: str, side: str, count: int, limit: Decimal,
-          done: dict) -> dict | None:
+          subaccount: int, done: dict) -> dict | None:
     """One order, logged; None if it was refused or its outcome is unknown (reported in `done`)."""
     what = f"{'קנייה' if action == 'buy' else 'מכירה'} {count} {side.upper()} {ticker} ב-{price(limit)}"
     coid = _order_id()
     send = client.buy if action == "buy" else client.sell
     try:
-        result = send(ticker, side, count, limit, coid)
+        result = send(ticker, side, count, limit, coid, subaccount=subaccount)
     except KalshiError as e:
         store.log_order(0, ticker, side, count, limit, coid, {"action": action, "error": str(e)})
         if e.status < 500:
@@ -124,9 +132,10 @@ def _send(store: Store, client: KalshiClient, action: str, ticker: str, side: st
     return result
 
 
-def _sell(store: Store, client: KalshiClient, p: dict, bid: Decimal, now: float, done: dict) -> None:
+def _sell(store: Store, client: KalshiClient, p: dict, bid: Decimal, subaccount: int, now: float,
+          done: dict) -> None:
     try:
-        held = client.position(p["ticker"], p["side"])
+        held = client.position(p["ticker"], p["side"], subaccount=subaccount)
     except (KalshiError, requests.RequestException) as e:
         done["problems"].append(f"לא הצלחתי לקרוא את הפוזיציה ב-{p['ticker']} לפני מכירה: {e}")
         return
@@ -141,7 +150,7 @@ def _sell(store: Store, client: KalshiClient, p: dict, bid: Decimal, now: float,
         done["problems"].append(f"{p['count']} {p['side'].upper()} {p['ticker']} כבר לא מוחזקים ב-Kalshi; "
                                 "הפוזיציה נסגרה בלי תמורה.")
         return
-    result = _send(store, client, "sell", p["ticker"], p["side"], count, bid, done)
+    result = _send(store, client, "sell", p["ticker"], p["side"], count, bid, subaccount, done)
     if result is None:
         return
     sold = int(result["filled"])
@@ -167,7 +176,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     if not picks:
         return
     try:
-        cash = client.balance()
+        cash = client.balance(subaccount=cfg.live_subaccount)
     except (KalshiError, requests.RequestException) as e:
         cash = None
         log.warning("could not read the Kalshi balance: %s", e)
@@ -182,7 +191,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
         if not legs:
             continue
         ((ticker, side, count, ask, _, mid),) = legs
-        result = _send(store, client, "buy", ticker, side, count, ask, done)
+        result = _send(store, client, "buy", ticker, side, count, ask, cfg.live_subaccount, done)
         if result is None:
             continue
         filled = int(result["filled"])
@@ -212,7 +221,7 @@ def _signed(d: Decimal) -> str:
 def report(store: Store, cfg: Config, latest: int = 8) -> str:
     positions = store.live_positions()
     left = budget_left(positions, cfg.live_budget)
-    lines = [f"Automatic trading (strict, real money): {'ON' if store.auto_on else 'off'}; "
+    lines = [f"Automatic trading (strict, real money): {'ON' if store.auto_on else 'off'} in {where(cfg)}; "
              f"up to ${cfg.live_max_trade:,.2f} a trade, budget ${cfg.live_budget:,.2f}, left ${left:,.2f}"]
     if not positions:
         lines.append("no positions yet")

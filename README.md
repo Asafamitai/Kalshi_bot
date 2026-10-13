@@ -156,14 +156,25 @@ second read of both rungs, at most one position per event), with real orders:
   account and sent `/auto on` again. An order Kalshi refuses is reported and
   the pass goes on.
 
+Everything it does on Kalshi (orders, the cash check, position reads) happens
+in `LIVE_SUBACCOUNT`: 0, the default, is the primary account; 1-63 is a
+numbered subaccount, with its own cash and positions. Running it in a
+subaccount keeps its money and positions apart from anything bought by hand
+(the buy buttons always use the primary account), and its cash there is a
+second ceiling beside `LIVE_BUDGET`. Kalshi offers subaccounts only through
+its API, not the app or the site: one is created, and cash moved into it,
+with the API's subaccount endpoints, not by this bot. `/auto on` replies with
+the cash the bot sees in that subaccount, which also shows Kalshi accepts it.
+
 With it off, no order of any kind is sent, but what is held is still marked
 at its bid and recorded when its market settles. After every pass that
 bought, closed or hit a problem, the alert bot gets one message in Hebrew;
 `/live` (or `python -m kalshi_bot live`) shows the positions, P&L and what
 is left of the budget, and `/status` says whether it is on.
 
-To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`
-and `LIVE_BUDGET`, restart, and send `/auto on`.
+To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`,
+`LIVE_BUDGET` and, to trade in a subaccount, `LIVE_SUBACCOUNT`; restart, and
+send `/auto on`.
 
 ### Paper trading
 
@@ -275,6 +286,7 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
 | `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
 | `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
+| `LIVE_SUBACCOUNT` | 0 | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63). |
 
 ## Tests
 

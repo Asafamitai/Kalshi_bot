@@ -20,6 +20,13 @@ ORDERS_PATH = "/portfolio/events/orders"
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
+def _sub(fields: dict, subaccount: int) -> dict:
+    """Point a request at a numbered subaccount (1-63); 0, the primary account, is Kalshi's default."""
+    if subaccount:
+        fields["subaccount"] = subaccount
+    return fields
+
+
 class KalshiError(RuntimeError):
     def __init__(self, status: int, body: str):
         super().__init__(f"Kalshi API {status}: {body[:300]}")
@@ -107,18 +114,18 @@ class KalshiClient:
             out.extend(data.get("markets") or [])
         return out
 
-    def balance(self) -> Decimal | None:
-        """Cash available, in dollars."""
-        data = self._request("GET", "/portfolio/balance", signed=True)
+    def balance(self, subaccount: int = 0) -> Decimal | None:
+        """Cash available, in dollars; in a numbered subaccount (1-63) if one is given."""
+        data = self._request("GET", "/portfolio/balance", params=_sub({}, subaccount), signed=True)
         value = data.get("balance_dollars")
         return Decimal(str(value)) if value is not None else None
 
-    def position(self, ticker: str, side: str) -> Decimal | None:
+    def position(self, ticker: str, side: str, subaccount: int = 0) -> Decimal | None:
         """Contracts held on `side` of `ticker`; None if Kalshi's answer can't be read.
 
         Kalshi keeps one signed position per market: YES positive, NO negative.
         """
-        data = self._request("GET", "/portfolio/positions", params={"ticker": ticker}, signed=True)
+        data = self._request("GET", "/portfolio/positions", params=_sub({"ticker": ticker}, subaccount), signed=True)
         rows = [r for r in data.get("market_positions") or [] if r.get("ticker") == ticker]
         if not rows:
             return Decimal(0)
@@ -129,26 +136,28 @@ class KalshiClient:
         held = signed if side == "yes" else -signed
         return max(held, Decimal(0))
 
-    def buy(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str) -> dict:
+    def buy(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str,
+            subaccount: int = 0) -> dict:
         """Buy up to `count` at `limit_price` or better; whatever doesn't fill at once is cancelled.
 
         Goes through the V2 endpoint (the legacy POST /portfolio/orders answers
         410 since 2026-08-24). V2 quotes only the YES book: buying YES is a bid
         at p, buying NO at p is an ask (selling YES) at 1 - p.
         """
-        return self._order(ticker, side, "buy", count, limit_price, client_order_id)
+        return self._order(ticker, side, "buy", count, limit_price, client_order_id, subaccount)
 
-    def sell(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str) -> dict:
+    def sell(self, ticker: str, side: str, count: int, limit_price: Decimal, client_order_id: str,
+             subaccount: int = 0) -> dict:
         """Sell up to `count` held on `side` at `limit_price` or better, immediate or cancel.
 
         The mirror of buy: selling YES at p is an ask at p, selling NO at p is
         a bid (buying YES) at 1 - p, which Kalshi nets against the NO held.
         Check `position` first: selling more than is held opens the other side.
         """
-        return self._order(ticker, side, "sell", count, limit_price, client_order_id)
+        return self._order(ticker, side, "sell", count, limit_price, client_order_id, subaccount)
 
     def _order(self, ticker: str, side: str, action: str, count: int, limit_price: Decimal,
-               client_order_id: str) -> dict:
+               client_order_id: str, subaccount: int = 0) -> dict:
         if not self.can_trade:
             raise RuntimeError("Kalshi API key is not configured")
         yes_price = limit_price if side == "yes" else 1 - limit_price
@@ -162,6 +171,7 @@ class KalshiClient:
             "time_in_force": "immediate_or_cancel",
             "self_trade_prevention_type": "taker_at_cross",
         }
+        _sub(body, subaccount)
         try:
             data = self._request("POST", ORDERS_PATH, json=body, signed=True)
         except KalshiError as e:

@@ -29,6 +29,13 @@ def _users(env, name: str, chat_id: str | None) -> set[str]:
     return users or ({chat_id} if chat_id else set())
 
 
+def _subaccount(value: str | None) -> int:
+    n = int(value or 0)
+    if not 0 <= n <= 63:
+        raise ValueError(f"LIVE_SUBACCOUNT must be 0 (the primary account) or 1-63, not {n}")
+    return n
+
+
 @dataclass(frozen=True)
 class Config:
     kalshi_base_url: str = DEFAULT_BASE_URL
@@ -76,6 +83,9 @@ class Config:
     # may lose in all. Losses come off the budget and are not refilled.
     live_max_trade: Decimal = Decimal("10")
     live_budget: Decimal = Decimal("100")
+    # The Kalshi subaccount it trades in: 0 is the primary account, 1-63 a
+    # numbered subaccount with its own cash and positions.
+    live_subaccount: int = 0
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -131,6 +141,7 @@ class Config:
                               if b.strip()),
             live_max_trade=num("LIVE_MAX_TRADE", d.live_max_trade),
             live_budget=num("LIVE_BUDGET", d.live_budget),
+            live_subaccount=_subaccount(env.get("LIVE_SUBACCOUNT")),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),

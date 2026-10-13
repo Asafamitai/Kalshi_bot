@@ -147,3 +147,20 @@ def test_position_is_signed_yes_positive(body, yes, no):
     call = session.calls[0]
     assert call["url"].endswith("/portfolio/positions") and call["params"] == {"ticker": "APP-T195"}
     assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
+
+
+def test_subaccount_goes_on_orders_balance_and_positions():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "1.00"}),
+                           FakeResponse(200, {"balance_dollars": "12.50"}),
+                           FakeResponse(200, {"market_positions": []}),
+                           FakeResponse(201, {"order_id": "o2", "fill_count": "0.00"})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    client.buy("APP-T195", "no", 1, Decimal("0.86"), "auto-a", subaccount=3)
+    assert client.balance(subaccount=3) == Decimal("12.50")
+    client.position("APP-T195", "no", subaccount=3)
+    client.buy("APP-T195", "no", 1, Decimal("0.86"), "lk-1-10")  # the primary account: no field at all
+    assert session.calls[0]["json"]["subaccount"] == 3
+    assert session.calls[1]["params"] == {"subaccount": 3}
+    assert session.calls[2]["params"] == {"ticker": "APP-T195", "subaccount": 3}
+    assert "subaccount" not in session.calls[3]["json"]

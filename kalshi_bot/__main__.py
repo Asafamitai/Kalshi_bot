@@ -100,10 +100,10 @@ def main(argv: list[str] | None = None) -> None:
         store = Store(cfg.db_path)
         log.info(
             "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, auto %s (budget %s, "
-            "%s a trade), paper %s, telegram %s, paper telegram %s",
+            "%s a trade, subaccount %s), paper %s, telegram %s, paper telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
             "on" if store.trading_on else "off", "on" if store.auto_on else "off", cfg.live_budget,
-            cfg.live_max_trade, "on" if cfg.paper_trading else "off", "on" if telegram else "off",
+            cfg.live_max_trade, cfg.live_subaccount, "on" if cfg.paper_trading else "off", "on" if telegram else "off",
             "on" if paper_telegram else "off",
         )
         App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram, paper_telegram=paper_telegram).run()

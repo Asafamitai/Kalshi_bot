@@ -23,6 +23,8 @@ class FakeKalshi:
         self.orders = []
         self.can_trade = can_trade
         self.cash = D("1000")
+        # The subaccount each order, balance and position read went to.
+        self.subaccounts = []
         # Contracts held per (ticker, side); what an order raises instead of filling; how many it fills.
         self.held = {}
         self.order_error = None
@@ -35,15 +37,18 @@ class FakeKalshi:
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
 
-    def balance(self):
+    def balance(self, subaccount=0):
+        self.subaccounts.append(("balance", subaccount))
         return self.cash
 
-    def buy(self, ticker, side, count, limit_price, client_order_id):
+    def buy(self, ticker, side, count, limit_price, client_order_id, subaccount=0):
         self.orders.append((ticker, side, count, limit_price, client_order_id))
+        self.subaccounts.append(("buy", subaccount))
         return self._fill(ticker, side, count, limit_price, 1)
 
-    def sell(self, ticker, side, count, limit_price, client_order_id):
+    def sell(self, ticker, side, count, limit_price, client_order_id, subaccount=0):
         self.orders.append(("sell", ticker, side, count, limit_price, client_order_id))
+        self.subaccounts.append(("sell", subaccount))
         return self._fill(ticker, side, count, limit_price, -1)
 
     def _fill(self, ticker, side, count, limit_price, sign):
@@ -53,7 +58,8 @@ class FakeKalshi:
         self.held[(ticker, side)] = self.held.get((ticker, side), D(0)) + sign * filled
         return {"already": False, "order_id": "o1", "filled": filled, "avg_price": limit_price}
 
-    def position(self, ticker, side):
+    def position(self, ticker, side, subaccount=0):
+        self.subaccounts.append(("position", subaccount))
         return self.held.get((ticker, side), D(0))
 
 
