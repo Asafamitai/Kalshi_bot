@@ -63,6 +63,16 @@ def test_iter_open_markets_follows_cursor():
     assert session.calls[1]["params"]["cursor"] == "c1"
 
 
+def test_settled_markets_reads_the_series_since_a_time_and_stops_at_the_page_limit():
+    session = FakeSession([FakeResponse(200, {"markets": [{"ticker": "A"}], "cursor": "c1"}),
+                           FakeResponse(200, {"markets": [{"ticker": "B"}], "cursor": "c2"})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert [m["ticker"] for m in client.settled_markets("KXAPP", 1_700_000_000.5, pages=2)] == ["A", "B"]
+    assert session.calls[0]["params"] == {"series_ticker": "KXAPP", "status": "settled",
+                                          "min_close_ts": 1_700_000_000, "limit": 1000}
+    assert session.calls[1]["params"]["cursor"] == "c1" and len(session.calls) == 2
+
+
 def test_buy_no_goes_to_v2_as_a_yes_ask():
     key = ed25519.Ed25519PrivateKey.generate()
     session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "11.00", "remaining_count": "0.00",

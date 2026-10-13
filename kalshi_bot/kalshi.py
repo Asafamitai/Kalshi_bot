@@ -129,6 +129,25 @@ class KalshiClient:
             out.extend(data.get("markets") or [])
         return out
 
+    def event_markets(self, event_ticker: str) -> list[dict]:
+        """Every market of one event: its whole ladder."""
+        data = self._request("GET", "/markets", params={"event_ticker": event_ticker, "limit": 1000})
+        return data.get("markets") or []
+
+    def settled_markets(self, series_ticker: str, since: float, pages: int = 5) -> list[dict]:
+        """The series' markets settled since `since` (epoch seconds), at most `pages` pages of 1000."""
+        out, cursor = [], None
+        for _ in range(pages):
+            params = {"series_ticker": series_ticker, "status": "settled", "min_close_ts": int(since), "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = self._request("GET", "/markets", params=params)
+            out.extend(data.get("markets") or [])
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        return out
+
     def balance(self, subaccount: int = 0) -> Decimal | None:
         """Cash available, in dollars; in a numbered subaccount (1-63) if one is given."""
         data = self._request("GET", "/portfolio/balance", params=_sub({}, subaccount), signed=True)

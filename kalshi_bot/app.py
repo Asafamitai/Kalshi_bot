@@ -7,11 +7,12 @@ import threading
 import time
 from html import escape
 
-from . import alerts, episodes, live, paper, subaccounts, trader
+from . import alerts, episodes, live, paper, subaccounts, trader, zoom
 from .config import Config
+from .fees import fee_per_contract
 from .format import alert_text, buy_buttons, console_line
 from .kalshi import KalshiClient
-from .ladder import Violation, build_ladders, find_violations
+from .ladder import SIDES, Violation, build_ladders, find_violations
 from .store import Store
 from .telegram import Telegram
 
@@ -26,7 +27,8 @@ HELP = (
     "/trading on · הפעלת קנייה אמיתית בלחיצה\n"
     "/trading off · כיבוי (ברירת המחדל): לחיצה רק מראה מה הייתה קונה\n"
     "/report · כמה זמן סתירות שורדות ואיזו מדרגה זזה כשנסגרו\n"
-    "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
+    "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול\n"
+    "/zoom TICKER [yes|no] · זום אין על שוק: הסולם, מדרגת הייחוס וההיסטוריה של הסדרה"
 )
 
 # KALSHI_LADDER_AUTO_BOT: automatic trading with real money, and its twin on paper.
@@ -41,7 +43,9 @@ AUTO_HELP = (
     "/subaccount create · פתיחת תת-החשבון ב-Kalshi\n"
     "/subaccount fund 100 · העברת $100 מהחשבון הראשי לתת-החשבון\n"
     "/subaccount withdraw 100 · החזרת $100 מתת-החשבון לחשבון הראשי\n"
-    "/paper · תיקי המסחר על נייר"
+    "/paper · תיקי המסחר על נייר\n"
+    "/zoom · זום אין על כל פוזיציה פתוחה: הסולם, מדרגת הייחוס וההיסטוריה של הסדרה\n"
+    "/zoom TICKER [yes|no] · זום אין על שוק מסוים"
 )
 
 MOVED = "המסחר האוטומטי עבר לבוט KALSHI_LADDER_AUTO_BOT: /auto, /live, /status ו-/subaccount שם."
@@ -111,6 +115,7 @@ class App:
             log.exception("automatic trading failed")
             done = {"opened": [], "closed": [], "problems": [f"המסחר האוטומטי נכשל בסבב הזה: {e}"]}
         self.send_live(done)
+        self.send_zooms(done["opened"])
 
         self.store.log_scan(at=now, seconds=now - started, markets=len(markets), ladders=len(ladders),
                             violations=len(found), alertable=len(qualifying), sent=sent)
@@ -150,6 +155,46 @@ class App:
         except Exception:
             log.exception("could not send the automatic trading update")
 
+    def send_zooms(self, opened: list[int]) -> None:
+        """A zoom on every position automatic trading just opened, to KALSHI_LADDER_AUTO_BOT; never stops the scan."""
+        if not opened:
+            return
+        by_id = {p["id"]: p for p in self.store.live_positions()}
+        for i in opened:
+            text = self._zoom_text(lambda p=by_id[i]: zoom.for_position(self.scan_client, self.cfg, p, now=self.clock()))
+            try:
+                if self.paper_telegram is None:
+                    log.info("ZOOM %s", zoom.plain(text))
+                else:
+                    self.paper_telegram.send(self.cfg.paper_telegram_chat_id, text)
+            except Exception:
+                log.exception("could not send the zoom on live position %s", i)
+
+    def zoom_command(self, args: list[str]) -> list[str]:
+        """/zoom: every open automatic trading position; /zoom TICKER [yes|no]: that market."""
+        held = [p for p in self.store.live_positions() if p["status"] == "open"]
+        if not args:
+            if not held:
+                return ["אין פוזיציות פתוחות במסחר האוטומטי. /zoom TICKER [yes|no] לזום על שוק מסוים."]
+            return [self._zoom_text(lambda p=p: zoom.for_position(self.scan_client, self.cfg, p, now=self.clock()))
+                    for p in held]
+        ticker = args[0].upper()
+        mine = [p for p in held if p["ticker"] == ticker]
+        side = args[1].lower() if len(args) > 1 and args[1].lower() in SIDES else mine[0]["side"] if mine else "yes"
+        mine = [p for p in mine if p["side"] == side]
+        if mine:
+            return [self._zoom_text(lambda: zoom.for_position(self.scan_client, self.cfg, mine[0], now=self.clock()))]
+        return [self._zoom_text(lambda: zoom.build(self.scan_client, self.cfg, ticker, side, now=self.clock()))]
+
+    def _zoom_text(self, make) -> str:
+        try:
+            return zoom.render(make(), self.cfg)
+        except LookupError as e:
+            return f"🔍 {escape(str(e.args[0] if e.args else e))}."
+        except Exception as e:
+            log.exception("zoom failed")
+            return f"🔍 לא הצלחתי לעשות זום: {escape(str(e))}"
+
     def _allowed(self, user: dict | None) -> bool:
         return str((user or {}).get("id")) in self.cfg.telegram_allowed_user_ids
 
@@ -171,6 +216,10 @@ class App:
             reply = self.auto_status_text()
         elif command == "/subaccount":
             reply = self.subaccount_command(words[1:])
+        elif command == "/zoom":
+            for text in self.zoom_command(words[1:]):
+                self.paper_telegram.send(self.cfg.paper_telegram_chat_id, text)
+            return
         else:
             reply = AUTO_HELP
         self.paper_telegram.send(self.cfg.paper_telegram_chat_id, reply)
@@ -197,6 +246,10 @@ class App:
             reply = f"<pre>{escape(episodes.report(self.store, now=self.clock()))}</pre>"
         elif command == "/paper":
             reply = f"<pre>{escape(paper.report(self.store, self.cfg))}</pre>"
+        elif command == "/zoom":
+            for text in self.zoom_command(words[1:]):
+                self.telegram.send(self.cfg.telegram_chat_id, text)
+            return
         else:
             reply = HELP
         self.telegram.send(self.cfg.telegram_chat_id, reply)
@@ -299,6 +352,11 @@ class App:
         self.telegram.send(self.cfg.telegram_chat_id, f"{icon} {outcome.message}")
         if outcome.kind == "repriced":
             self.send_alert(outcome.violation)
+        elif outcome.kind == "bought":
+            v = outcome.violation
+            self.telegram.send(self.cfg.telegram_chat_id, self._zoom_text(lambda: zoom.build(
+                self.scan_client, self.cfg, v.safer.ticker, v.side, reference=v.dominated.ticker,
+                paid=v.ask + fee_per_contract(v.ask), now=self.clock())))
 
     def _scan_forever(self) -> None:
         while True:
