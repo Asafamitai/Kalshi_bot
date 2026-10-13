@@ -18,6 +18,20 @@ DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
 ORDERS_PATH = "/portfolio/events/orders"
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+# A full scan reads over a hundred pages, and a second bot may be scanning
+# too: Kalshi's rate limit answers 429 to a burst. Retries wait 1, 2, 4, ...
+# up to 30 seconds (about a minute and a half in all), or as long as its
+# Retry-After says, and pages are read a little apart.
+_ATTEMPTS = 8
+_PAGE_PAUSE = 0.1
+
+
+def _retry_wait(resp, attempt: int) -> float:
+    """Kalshi's Retry-After, if it sent one; else 1, 2, 4, ... up to 30 seconds."""
+    try:
+        return min(float((getattr(resp, "headers", None) or {}).get("Retry-After")), 60.0)
+    except (TypeError, ValueError):
+        return float(min(2**attempt, 30))
 
 
 def _sub(fields: dict, subaccount: int) -> dict:
@@ -81,13 +95,13 @@ class KalshiClient:
         url = self.base_url + path
         # Orders are only retried on 429: a 5xx may have been accepted already.
         retry_on = _RETRY_STATUS if method == "GET" else {429}
-        for attempt in range(5):
+        for attempt in range(_ATTEMPTS):
             headers = self.auth_headers(method, url) if signed else {}
             resp = self.session.request(
                 method, url, params=params, json=json, headers=headers, timeout=self.timeout
             )
-            if resp.status_code in retry_on and attempt < 4:
-                time.sleep(min(2**attempt, 10))
+            if resp.status_code in retry_on and attempt < _ATTEMPTS - 1:
+                time.sleep(_retry_wait(resp, attempt))
                 continue
             if resp.status_code >= 400:
                 raise KalshiError(resp.status_code, resp.text)
@@ -106,6 +120,7 @@ class KalshiClient:
             cursor = data.get("cursor")
             if not cursor:
                 return
+            time.sleep(_PAGE_PAUSE)
 
     def get_markets(self, tickers: list[str]) -> list[dict]:
         out = []
