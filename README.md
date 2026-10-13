@@ -63,6 +63,7 @@ python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
 python -m kalshi_bot report          # how long contradictions survived, and which rung moved
 python -m kalshi_bot paper           # the paper trading books
 python -m kalshi_bot live            # automatic trading with real money
+python -m kalshi_bot subaccount      # its Kalshi subaccount: show, create, fund 100, withdraw 100
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
 python -m kalshi_bot telegram-chats --paper  # the same for the paper trading bot
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
@@ -156,15 +157,30 @@ second read of both rungs, at most one position per event), with real orders:
   account and sent `/auto on` again. An order Kalshi refuses is reported and
   the pass goes on.
 
-Everything it does on Kalshi (orders, the cash check, position reads) happens
-in `LIVE_SUBACCOUNT`: 0, the default, is the primary account; 1-63 is a
-numbered subaccount, with its own cash and positions. Running it in a
-subaccount keeps its money and positions apart from anything bought by hand
-(the buy buttons always use the primary account), and its cash there is a
-second ceiling beside `LIVE_BUDGET`. Kalshi offers subaccounts only through
-its API, not the app or the site: one is created, and cash moved into it,
-with the API's subaccount endpoints, not by this bot. `/auto on` replies with
-the cash the bot sees in that subaccount, which also shows Kalshi accepts it.
+#### Its own subaccount: KALSHI_LADDER_AUTO_BOT
+
+Everything automatic trading does on Kalshi (orders, the cash check, position
+reads) can happen in a subaccount of its own, with its own cash and
+positions. That keeps its money and positions apart from anything bought by
+hand (the buy buttons always use the primary account), and its cash there is
+a second ceiling beside `LIVE_BUDGET`. Kalshi offers subaccounts only through
+its API (and only from its Advanced API tier), so the bot manages it:
+
+- `/subaccount create` opens one. Kalshi numbers subaccounts (1-63) and keeps
+  no names, so the bot remembers the number as `KALSHI_LADDER_AUTO_BOT` in its
+  database, and automatic trading uses it from then on. It opens one at most.
+- `/subaccount fund 100` moves $100 from the primary account into it, and
+  `/subaccount withdraw 100` moves it back. Each transfer carries an id
+  Kalshi applies once, so a retry can't move the money twice; when the
+  outcome is unknown the reply says to check before trying again.
+- `/subaccount` shows which account it trades in, and both balances.
+
+The same from the command line: `python -m kalshi_bot subaccount create`,
+`... fund 100`, `... withdraw 100`, or just `subaccount`.
+`KALSHI_LADDER_AUTO_BOT_SUBACCOUNT` overrides the number (0 is the primary
+account). Without either, it trades in the primary account. `/auto on`
+replies with the cash the bot sees where it trades, which also shows Kalshi
+accepts that subaccount.
 
 With it off, no order of any kind is sent, but what is held is still marked
 at its bid and recorded when its market settles. After every pass that
@@ -172,9 +188,9 @@ bought, closed or hit a problem, the alert bot gets one message in Hebrew;
 `/live` (or `python -m kalshi_bot live`) shows the positions, P&L and what
 is left of the budget, and `/status` says whether it is on.
 
-To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`,
-`LIVE_BUDGET` and, to trade in a subaccount, `LIVE_SUBACCOUNT`; restart, and
-send `/auto on`.
+To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`
+and `LIVE_BUDGET`, and restart. Then, for a subaccount of its own,
+`/subaccount create` and `/subaccount fund 100`; and `/auto on`.
 
 ### Paper trading
 
@@ -286,7 +302,7 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
 | `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
 | `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
-| `LIVE_SUBACCOUNT` | 0 | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63). |
+| `KALSHI_LADDER_AUTO_BOT_SUBACCOUNT` | – | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63); unset, the one `/subaccount create` opened, else the primary account. |
 
 ## Tests
 

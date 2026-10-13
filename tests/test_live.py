@@ -265,11 +265,12 @@ def test_without_telegram_it_logs(ladder, tmp_path, caplog):
 
 def test_live_config():
     d = Config.from_env({})
-    assert (d.live_max_trade, d.live_budget, d.live_subaccount) == (D("10"), D("100"), 0)
-    cfg = Config.from_env({"LIVE_MAX_TRADE": "25", "LIVE_BUDGET": "300", "LIVE_SUBACCOUNT": "3"})
+    assert (d.live_max_trade, d.live_budget, d.live_subaccount) == (D("10"), D("100"), None)
+    cfg = Config.from_env({"LIVE_MAX_TRADE": "25", "LIVE_BUDGET": "300", "KALSHI_LADDER_AUTO_BOT_SUBACCOUNT": "3"})
     assert (cfg.live_max_trade, cfg.live_budget, cfg.live_subaccount) == (D("25"), D("300"), 3)
+    assert Config.from_env({"KALSHI_LADDER_AUTO_BOT_SUBACCOUNT": "0"}).live_subaccount == 0
     with pytest.raises(ValueError):
-        Config.from_env({"LIVE_SUBACCOUNT": "64"})
+        Config.from_env({"KALSHI_LADDER_AUTO_BOT_SUBACCOUNT": "64"})
 
 
 # Subaccount
@@ -277,14 +278,15 @@ def test_live_config():
 
 def test_everything_happens_in_the_subaccount(ladder, mk, tmp_path):
     app, client, tg = auto_app(ladder, tmp_path, live_subaccount=3)
-    assert "בתת-חשבון 3" in tg.sent[-1][0] and "יתרה בתת-חשבון 3" in tg.sent[-1][0]
+    assert "בתת-חשבון KALSHI_LADDER_AUTO_BOT (3)" in tg.sent[-1][0]
+    assert "יתרה בתת-חשבון KALSHI_LADDER_AUTO_BOT (3): $1,000.00" in tg.sent[-1][0]
     app.scan_once()
     client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")
     app.scan_once()
     assert {what for what, _ in client.subaccounts} == {"balance", "buy", "position", "sell"}
     assert {n for _, n in client.subaccounts} == {3}
     say(app, "/live")
-    assert "in subaccount 3" in tg.sent[-1][0]
+    assert "in subaccount KALSHI_LADDER_AUTO_BOT (3)" in tg.sent[-1][0]
 
 
 def test_buy_buttons_stay_in_the_primary_account(ladder, tmp_path):
@@ -302,4 +304,4 @@ def test_auto_on_says_when_the_subaccount_balance_cannot_be_read(ladder, tmp_pat
         raise KalshiError(400, "subaccount not found")
     client.balance = no_such_subaccount
     say(app, "/auto on")
-    assert "לא הצלחתי לקרוא את היתרה בתת-חשבון 3" in tg.sent[-1][0] and "subaccount not found" in tg.sent[-1][0]
+    assert "לא הצלחתי לקרוא את היתרה בתת-חשבון KALSHI_LADDER_AUTO_BOT (3)" in tg.sent[-1][0] and "subaccount not found" in tg.sent[-1][0]

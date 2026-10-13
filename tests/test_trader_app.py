@@ -58,6 +58,16 @@ class FakeKalshi:
         self.held[(ticker, side)] = self.held.get((ticker, side), D(0)) + sign * filled
         return {"already": False, "order_id": "o1", "filled": filled, "avg_price": limit_price}
 
+    def create_subaccount(self):
+        self.created = getattr(self, "created", 0) + 1
+        return self.created
+
+    def transfer(self, from_subaccount, to_subaccount, dollars, transfer_id):
+        if self.order_error is not None:
+            raise self.order_error
+        self.transfers = getattr(self, "transfers", []) + [(from_subaccount, to_subaccount, dollars)]
+        return {}
+
     def position(self, ticker, side, subaccount=0):
         self.subaccounts.append(("position", subaccount))
         return self.held.get((ticker, side), D(0))

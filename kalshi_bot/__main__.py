@@ -7,7 +7,7 @@ import argparse
 import fcntl
 import logging
 
-from . import alerts, episodes, live, paper
+from . import alerts, episodes, live, paper, subaccounts
 from .app import App
 from .config import Config, load_dotenv
 from .format import console_line
@@ -57,6 +57,10 @@ def main(argv: list[str] | None = None) -> None:
     pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
     liv = sub.add_parser("live", help="automatic trading with real money: positions, P&L, budget")
     liv.add_argument("--latest", type=int, default=20, help="how many recent positions to list")
+    acct = sub.add_parser("subaccount", help=f"the Kalshi subaccount automatic trading uses ({subaccounts.NAME})")
+    acct.add_argument("action", nargs="?", default="show", choices=["show", "create", "fund", "withdraw"],
+                      help="show balances, create it, fund it from the primary account, or withdraw back")
+    acct.add_argument("amount", nargs="?", help="dollars, for fund and withdraw")
     chats = sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     chats.add_argument("--paper", action="store_true",
                        help="the paper trading bot instead, to find KALSHI_LADDER_AUTO_BOT_CHAT_ID")
@@ -74,6 +78,16 @@ def main(argv: list[str] | None = None) -> None:
         print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "live":
         print(live.report(Store(cfg.db_path), cfg, latest=args.latest))
+    elif args.command == "subaccount":
+        store, client = Store(cfg.db_path), cfg.kalshi_client()
+        if args.action == "create":
+            print(subaccounts.create(store, client, cfg))
+        elif args.action in ("fund", "withdraw"):
+            if not args.amount:
+                parser.error(f"{args.action} needs an amount in dollars")
+            print(subaccounts.transfer(store, client, cfg, args.amount, back=args.action == "withdraw"))
+        else:
+            print(subaccounts.show(store, client, cfg))
     elif args.command == "telegram-chats":
         name, token = ("KALSHI_LADDER_AUTO_BOT_TOKEN", cfg.paper_telegram_token) if args.paper \
             else ("KALSHI_LADDER_BOT_TOKEN", cfg.telegram_token)
@@ -98,12 +112,13 @@ def main(argv: list[str] | None = None) -> None:
         elif cfg.paper_telegram:
             paper_telegram = Telegram(cfg.paper_telegram_token)
         store = Store(cfg.db_path)
+        account = subaccounts.number(store, cfg)
         log.info(
             "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, auto %s (budget %s, "
             "%s a trade, subaccount %s), paper %s, telegram %s, paper telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
             "on" if store.trading_on else "off", "on" if store.auto_on else "off", cfg.live_budget,
-            cfg.live_max_trade, cfg.live_subaccount, "on" if cfg.paper_trading else "off", "on" if telegram else "off",
+            cfg.live_max_trade, account, "on" if cfg.paper_trading else "off", "on" if telegram else "off",
             "on" if paper_telegram else "off",
         )
         App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram, paper_telegram=paper_telegram).run()

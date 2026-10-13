@@ -164,3 +164,26 @@ def test_subaccount_goes_on_orders_balance_and_positions():
     assert session.calls[1]["params"] == {"subaccount": 3}
     assert session.calls[2]["params"] == {"ticker": "APP-T195", "subaccount": 3}
     assert "subaccount" not in session.calls[3]["json"]
+
+
+def test_create_subaccount_returns_its_number():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"subaccount_number": 4})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    assert client.create_subaccount() == 4
+    call = session.calls[0]
+    assert call["method"] == "POST" and call["url"].endswith("/portfolio/subaccounts")
+    assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
+
+
+def test_transfer_in_cents_with_an_id():
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(200, {})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    client.transfer(0, 4, Decimal("25.50"), "auto-t1")
+    call = session.calls[0]
+    assert call["url"].endswith("/portfolio/subaccounts/transfer")
+    assert call["json"] == {"client_transfer_id": "auto-t1", "from_subaccount": 0, "to_subaccount": 4,
+                            "amount_cents": 2550, "exchange_index": 0}
+    with pytest.raises(ValueError):
+        client.transfer(0, 4, Decimal("0.005"), "auto-t2")

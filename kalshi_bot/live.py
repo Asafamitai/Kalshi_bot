@@ -19,9 +19,9 @@ Safety:
   trading off and says so, so nothing more is bought until someone has
   looked at the account.
 
-Everything it does on Kalshi (orders, the balance, positions) happens in
-LIVE_SUBACCOUNT: 0 is the primary account, 1-63 a numbered subaccount with
-its own cash and positions, which keeps it apart from anything bought by hand.
+Everything it does on Kalshi (orders, the balance, positions) happens in its
+subaccount (see subaccounts.py): KALSHI_LADDER_AUTO_BOT, with its own cash
+and positions, which keeps it apart from anything bought by hand.
 
 With automatic trading off, no order of any kind is sent, but what is held is
 still marked at its bid and settled when its market resolves.
@@ -37,7 +37,7 @@ from html import escape
 
 import requests
 
-from . import alerts, paper
+from . import alerts, paper, subaccounts
 from .config import Config
 from .fees import order_cost, order_fee
 from .format import event_url, price
@@ -46,10 +46,6 @@ from .ladder import ZERO, Rung, Violation
 from .store import Store
 
 log = logging.getLogger("kalshi_bot")
-
-
-def where(cfg: Config) -> str:
-    return f"subaccount {cfg.live_subaccount}" if cfg.live_subaccount else "the primary account"
 
 
 def budget_left(positions: list[dict], budget: Decimal) -> Decimal:
@@ -76,7 +72,7 @@ def step(store: Store, client: KalshiClient, cfg: Config, violations: list[Viola
         bid, depth = (rung.bid(p["side"]), rung.bid_size(p["side"])) if rung else (ZERO, ZERO)
         marks[p["id"]] = bid
         if _trading(store, client) and paper.take_profit(p, bid, depth, cfg.paper_take_profit):
-            _sell(store, client, p, bid, cfg.live_subaccount, now, done)
+            _sell(store, client, p, bid, subaccounts.number(store, cfg), now, done)
     store.set_live_marks(marks)
     if gone:
         fresh = {m["ticker"]: m for m in client.get_markets(sorted({p["ticker"] for p in gone}))}
@@ -175,8 +171,9 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     picks = [v for v in alerts.reread(client, want, cfg) if paper.wanted(paper.STRICT, v, cfg, now)]
     if not picks:
         return
+    account = subaccounts.number(store, cfg)
     try:
-        cash = client.balance(subaccount=cfg.live_subaccount)
+        cash = client.balance(subaccount=account)
     except (KalshiError, requests.RequestException) as e:
         cash = None
         log.warning("could not read the Kalshi balance: %s", e)
@@ -191,7 +188,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
         if not legs:
             continue
         ((ticker, side, count, ask, _, mid),) = legs
-        result = _send(store, client, "buy", ticker, side, count, ask, cfg.live_subaccount, done)
+        result = _send(store, client, "buy", ticker, side, count, ask, account, done)
         if result is None:
             continue
         filled = int(result["filled"])
@@ -221,7 +218,8 @@ def _signed(d: Decimal) -> str:
 def report(store: Store, cfg: Config, latest: int = 8) -> str:
     positions = store.live_positions()
     left = budget_left(positions, cfg.live_budget)
-    lines = [f"Automatic trading (strict, real money): {'ON' if store.auto_on else 'off'} in {where(cfg)}; "
+    lines = [f"Automatic trading (strict, real money): {'ON' if store.auto_on else 'off'} in "
+             f"{subaccounts.name_en(subaccounts.number(store, cfg))}; "
              f"up to ${cfg.live_max_trade:,.2f} a trade, budget ${cfg.live_budget:,.2f}, left ${left:,.2f}"]
     if not positions:
         lines.append("no positions yet")

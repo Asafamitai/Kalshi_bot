@@ -7,7 +7,7 @@ import threading
 import time
 from html import escape
 
-from . import alerts, episodes, live, paper, trader
+from . import alerts, episodes, live, paper, subaccounts, trader
 from .config import Config
 from .format import alert_text, buy_buttons, console_line
 from .kalshi import KalshiClient
@@ -28,6 +28,10 @@ HELP = (
     "/auto on · מסחר אוטומטי בכסף אמיתי לפי האסטרטגיה המחמירה\n"
     "/auto off · כיבוי המסחר האוטומטי (ברירת המחדל)\n"
     "/live · מצב המסחר האוטומטי: פוזיציות, רווח והפסד ותקציב\n"
+    "/subaccount · תת-החשבון של המסחר האוטומטי (KALSHI_LADDER_AUTO_BOT) והיתרות\n"
+    "/subaccount create · פתיחת תת-החשבון ב-Kalshi\n"
+    "/subaccount fund 100 · העברת $100 מהחשבון הראשי לתת-החשבון\n"
+    "/subaccount withdraw 100 · החזרת $100 מתת-החשבון לחשבון הראשי\n"
     "/report · כמה זמן סתירות שורדות ואיזו מדרגה זזה כשנסגרו\n"
     "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
 )
@@ -175,12 +179,14 @@ class App:
                 reply = "אין מפתח Kalshi בסביבה, אז המסחר האוטומטי נשאר כבוי."
             elif words[1].lower() == "on":
                 self.store.set_setting("auto", "on")
-                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי ב{self._where()}, עד "
+                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי {self._where()}, עד "
                          f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.\n"
                          + self._live_cash())
             else:
                 self.store.set_setting("auto", "off")
                 reply = "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
+        elif command == "/subaccount":
+            reply = self.subaccount_command(words[1:])
         elif command == "/live":
             reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
         elif command == "/status":
@@ -193,26 +199,37 @@ class App:
             reply = HELP
         self.telegram.send(self.cfg.telegram_chat_id, reply)
 
+    def subaccount_command(self, args: list[str]) -> str:
+        action = args[0].lower() if args else ""
+        if action == "create":
+            text = subaccounts.create(self.store, self.trade_client, self.cfg)
+        elif action in ("fund", "withdraw") and len(args) == 2:
+            text = subaccounts.transfer(self.store, self.trade_client, self.cfg, args[1], back=action == "withdraw")
+        elif not action:
+            text = subaccounts.show(self.store, self.trade_client, self.cfg)
+        else:
+            return HELP
+        return escape(text)
+
     def _where(self) -> str:
-        n = self.cfg.live_subaccount
-        return f"תת-חשבון {n}" if n else "חשבון הראשי"
+        return subaccounts.name(subaccounts.number(self.store, self.cfg))
 
     def _live_cash(self) -> str:
         """The cash automatic trading can see, which also shows Kalshi accepts its subaccount."""
         try:
-            cash = self.trade_client.balance(subaccount=self.cfg.live_subaccount)
+            cash = self.trade_client.balance(subaccount=subaccounts.number(self.store, self.cfg))
         except Exception as e:
-            return f"⚠️ לא הצלחתי לקרוא את היתרה ב{self._where()}: {escape(str(e))}. עד שזה יסתדר לא ייקנה כלום."
+            return f"⚠️ לא הצלחתי לקרוא את היתרה {self._where()}: {escape(str(e))}. עד שזה יסתדר לא ייקנה כלום."
         if cash is None:
-            return f"⚠️ לא הצלחתי לקרוא את היתרה ב{self._where()}. עד שזה יסתדר לא ייקנה כלום."
-        return f"יתרה ב{self._where()}: ${cash:,.2f}"
+            return f"⚠️ לא הצלחתי לקרוא את היתרה {self._where()}. עד שזה יסתדר לא ייקנה כלום."
+        return f"יתרה {self._where()}: ${cash:,.2f}"
 
     def status_text(self) -> str:
         last = self.store.last_scan()
         now = self.clock()
         lines = [f"מסחר בלחיצה: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>",
                  f"מסחר אוטומטי (מחמירה, כסף אמיתי): <b>{'פעיל' if self.store.auto_on else 'כבוי'}</b>"
-                 f" ב{self._where()}"
+                 f" {self._where()}"
                  f" · נשאר בתקציב ${live.budget_left(self.store.live_positions(), self.cfg.live_budget):,.2f}"
                  f" מתוך ${self.cfg.live_budget:,.2f}"]
         if last:

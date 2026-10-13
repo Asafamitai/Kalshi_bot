@@ -120,6 +120,27 @@ class KalshiClient:
         value = data.get("balance_dollars")
         return Decimal(str(value)) if value is not None else None
 
+    def create_subaccount(self) -> int:
+        """A new numbered subaccount (Kalshi numbers them 1-63 and keeps no names); its number."""
+        data = self._request("POST", "/portfolio/subaccounts", json={"exchange_index": 0}, signed=True)
+        n = data.get("subaccount_number", data.get("subaccount"))
+        if n is None:
+            raise KalshiError(200, f"no subaccount number in Kalshi's answer: {data}")
+        return int(n)
+
+    def transfer(self, from_subaccount: int, to_subaccount: int, dollars: Decimal, transfer_id: str) -> dict:
+        """Move cash between two subaccounts (0 is the primary account).
+
+        Kalshi applies one `transfer_id` once: a repeat answers 409, so the
+        429 retry in _request can't move the money twice.
+        """
+        cents = dollars * 100
+        if cents != cents.to_integral_value() or cents <= 0:
+            raise ValueError(f"not a positive amount in whole cents: {dollars}")
+        body = {"client_transfer_id": transfer_id, "from_subaccount": from_subaccount,
+                "to_subaccount": to_subaccount, "amount_cents": int(cents), "exchange_index": 0}
+        return self._request("POST", "/portfolio/subaccounts/transfer", json=body, signed=True)
+
     def position(self, ticker: str, side: str, subaccount: int = 0) -> Decimal | None:
         """Contracts held on `side` of `ticker`; None if Kalshi's answer can't be read.
 
