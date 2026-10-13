@@ -1,5 +1,6 @@
 """Command line: `scan` once and print, `run` the bot, `report` on how long contradictions last,
-`paper` on what paper trading would have made, `live` on automatic trading with real money."""
+`paper` on what paper trading would have made, `live` on automatic trading with real money,
+`zoom` for a closer look at a position: its ladder, its reference rung, and the series' history."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import argparse
 import fcntl
 import logging
 
-from . import alerts, episodes, live, paper, subaccounts
+from . import alerts, episodes, live, paper, subaccounts, zoom
 from .app import App
 from .config import Config, load_dotenv
 from .format import console_line
@@ -57,6 +58,9 @@ def main(argv: list[str] | None = None) -> None:
     pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
     liv = sub.add_parser("live", help="automatic trading with real money: positions, P&L, budget")
     liv.add_argument("--latest", type=int, default=20, help="how many recent positions to list")
+    zm = sub.add_parser("zoom", help="a closer look at a market, or at every open automatic trading position")
+    zm.add_argument("ticker", nargs="?", help="the market; without one, every open automatic trading position")
+    zm.add_argument("--side", choices=["yes", "no"], default="yes")
     acct = sub.add_parser("subaccount", help=f"the Kalshi subaccount automatic trading uses ({subaccounts.NAME})")
     acct.add_argument("action", nargs="?", default="show", choices=["show", "create", "fund", "withdraw"],
                       help="show balances, create it, fund it from the primary account, or withdraw back")
@@ -78,6 +82,19 @@ def main(argv: list[str] | None = None) -> None:
         print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "live":
         print(live.report(Store(cfg.db_path), cfg, latest=args.latest))
+    elif args.command == "zoom":
+        client = cfg.kalshi_client()
+        if args.ticker:
+            try:
+                zooms = [zoom.build(client, cfg, args.ticker.upper(), args.side)]
+            except LookupError as e:
+                parser.exit(1, f"{e}\n")
+        else:
+            held = [p for p in Store(cfg.db_path).live_positions() if p["status"] == "open"]
+            if not held:
+                print("no open automatic trading positions; `zoom TICKER` for a market")
+            zooms = [zoom.for_position(client, cfg, p) for p in held]
+        print("\n\n".join(zoom.plain(zoom.render(z, cfg)) for z in zooms))
     elif args.command == "subaccount":
         store, client = Store(cfg.db_path), cfg.kalshi_client()
         if args.action == "create":

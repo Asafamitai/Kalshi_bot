@@ -29,6 +29,8 @@ class FakeKalshi:
         self.held = {}
         self.order_error = None
         self.fill = None
+        # The series' settled markets, for zooms.
+        self.settled = []
 
     def iter_open_markets(self):
         source = self.scan_markets if self.scan_markets is not None else self.markets
@@ -36,6 +38,12 @@ class FakeKalshi:
 
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
+
+    def event_markets(self, event_ticker):
+        return [copy.deepcopy(m) for m in self.markets.values() if m["event_ticker"] == event_ticker]
+
+    def settled_markets(self, series_ticker, since, pages=5):
+        return copy.deepcopy(self.settled)
 
     def balance(self, subaccount=0):
         self.subaccounts.append(("balance", subaccount))
@@ -240,7 +248,8 @@ def test_tap_buys_with_deterministic_order_id(ladder, tmp_path):
     tap(app, data)
     alert_id = data.split(":")[1]
     assert client.orders == [("APP-T195", "no", 50, D("0.86"), f"lk-{alert_id}-50")]
-    assert tg.sent[-1][0].startswith("✅ נקנו 50 מתוך 50 NO APP-T195")
+    assert tg.sent[-2][0].startswith("✅ נקנו 50 מתוך 50 NO APP-T195")
+    assert tg.sent[-1][0].startswith("🔍 <b>זום אין</b>")  # then a closer look at what was bought
     assert tg.cleared == [7]
     tap(app, data)  # double tap
     assert len(client.orders) == 1 and tg.answers[-1] == "כבר טופל."

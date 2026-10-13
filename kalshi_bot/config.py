@@ -56,6 +56,9 @@ class Config:
     max_price: Decimal = Decimal("0.90")
     min_depth: Decimal = Decimal("50")
     min_volume_24h: Decimal = Decimal("50")
+    # The dearer rung's mid is the price the saving is measured against; a
+    # rung that barely trades has a mid that means nothing.
+    min_ref_volume_24h: Decimal = Decimal("20")
     # Hours left before the market stops trading or resolves; live games move faster than a scan.
     min_hours_left: float = 24
     cooldown_hours: float = 12
@@ -127,6 +130,7 @@ class Config:
             max_price=num("MAX_PRICE", d.max_price),
             min_depth=num("MIN_DEPTH", d.min_depth),
             min_volume_24h=num("MIN_VOLUME_24H", d.min_volume_24h),
+            min_ref_volume_24h=num("MIN_REF_VOLUME_24H", d.min_ref_volume_24h),
             min_hours_left=float(env.get("MIN_HOURS_LEFT") or d.min_hours_left),
             cooldown_hours=float(env.get("COOLDOWN_HOURS") or d.cooldown_hours),
             max_alerts_per_pass=int(env.get("MAX_ALERTS_PER_PASS") or d.max_alerts_per_pass),

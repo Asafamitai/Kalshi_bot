@@ -71,6 +71,7 @@ class Rung:
     yes_ask_size: Decimal
     volume_24h: Decimal
     ladder_key: tuple
+    open_interest: Decimal = ZERO
     # When trading stops or the outcome is due, whichever comes first.
     ends_at: float | None = None
 
@@ -109,6 +110,7 @@ class Rung:
             yes_ask_size=to_decimal(m.get("yes_ask_size_fp")),
             volume_24h=to_decimal(m.get("volume_24h_fp")),
             ladder_key=ladder_key,
+            open_interest=to_decimal(m.get("open_interest_fp")),
             ends_at=min(ends) if ends else None,
         )
 
