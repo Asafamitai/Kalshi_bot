@@ -71,6 +71,11 @@ class Config:
     paper_strict_max_spread: Decimal = Decimal("0.05")
     # The books that open new trades; the others only see out what they hold.
     paper_books: tuple[str, ...] = ("strict", "pair")
+    # Automatic trading with real money on the strict strategy (switched on
+    # with /auto on): what one trade may cost, fees included, and the most it
+    # may lose in all. Losses come off the budget and are not refilled.
+    live_max_trade: Decimal = Decimal("10")
+    live_budget: Decimal = Decimal("100")
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -124,6 +129,8 @@ class Config:
             paper_strict_max_spread=num("PAPER_STRICT_MAX_SPREAD", d.paper_strict_max_spread),
             paper_books=tuple(b.strip().lower() for b in (env.get("PAPER_BOOKS") or ",".join(d.paper_books)).split(",")
                               if b.strip()),
+            live_max_trade=num("LIVE_MAX_TRADE", d.live_max_trade),
+            live_budget=num("LIVE_BUDGET", d.live_budget),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),

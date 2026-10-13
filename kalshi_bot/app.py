@@ -7,7 +7,7 @@ import threading
 import time
 from html import escape
 
-from . import alerts, episodes, paper, trader
+from . import alerts, episodes, live, paper, trader
 from .config import Config
 from .format import alert_text, buy_buttons, console_line
 from .kalshi import KalshiClient
@@ -25,6 +25,9 @@ HELP = (
     "/status · מצב הסריקה והמסחר\n"
     "/trading on · הפעלת קנייה אמיתית בלחיצה\n"
     "/trading off · כיבוי (ברירת המחדל): לחיצה רק מראה מה הייתה קונה\n"
+    "/auto on · מסחר אוטומטי בכסף אמיתי לפי האסטרטגיה המחמירה\n"
+    "/auto off · כיבוי המסחר האוטומטי (ברירת המחדל)\n"
+    "/live · מצב המסחר האוטומטי: פוזיציות, רווח והפסד ותקציב\n"
     "/report · כמה זמן סתירות שורדות ואיזו מדרגה זזה כשנסגרו\n"
     "/paper · תיק המסחר על נייר: מדרגה בודדת מול זוג נעול"
 )
@@ -89,10 +92,21 @@ class App:
             else:
                 self.send_paper(p)
 
+        lived = ""
+        try:
+            # Runs with automatic trading off too: what is held is still marked and settled.
+            done = live.step(self.store, self.trade_client, self.cfg, found, by_ticker, now)
+            lived = f"; live: {len(done['opened'])} opened, {len(done['closed'])} closed, " \
+                    f"{len(done['problems'])} problems"
+        except Exception as e:
+            log.exception("automatic trading failed")
+            done = {"opened": [], "closed": [], "problems": [f"המסחר האוטומטי נכשל בסבב הזה: {e}"]}
+        self.send_live(done)
+
         self.store.log_scan(at=now, seconds=now - started, markets=len(markets), ladders=len(ladders),
                             violations=len(found), alertable=len(qualifying), sent=sent)
         log.info("scanned %d markets in %.0fs: %d violations (%d new, %d closed), %d alertable, %d sent%s",
-                 len(markets), now - started, len(found), opened, closed, len(qualifying), sent, papered)
+                 len(markets), now - started, len(found), opened, closed, len(qualifying), sent, papered + lived)
         return picked
 
     def send_alert(self, v: Violation) -> None:
@@ -113,6 +127,19 @@ class App:
                 self.paper_telegram.send(self.cfg.paper_telegram_chat_id, text)
         except Exception:
             log.exception("could not send the paper trading update")
+
+    def send_live(self, done: dict) -> None:
+        """What automatic trading did this pass, to the alert bot; a failed send never stops the scan."""
+        try:
+            text = live.pass_message(self.store, self.cfg, done)
+            if text is None:
+                return
+            if self.telegram is None:
+                log.info("LIVE %s", text)
+            else:
+                self.telegram.send(self.cfg.telegram_chat_id, text)
+        except Exception:
+            log.exception("could not send the automatic trading update")
 
     def _allowed(self, user: dict | None) -> bool:
         return str((user or {}).get("id")) in self.cfg.telegram_allowed_user_ids
@@ -143,6 +170,16 @@ class App:
                 self.store.set_setting("trading", words[1].lower())
                 reply = "✅ המסחר הופעל: לחיצה על כפתור קונה באמת." if words[1].lower() == "on" \
                     else "⏸ המסחר כובה: לחיצה רק תראה מה הייתה קונה."
+        elif command == "/auto" and len(words) > 1 and words[1].lower() in ("on", "off"):
+            if words[1].lower() == "on" and not self.trade_client.can_trade:
+                reply = "אין מפתח Kalshi בסביבה, אז המסחר האוטומטי נשאר כבוי."
+            else:
+                self.store.set_setting("auto", words[1].lower())
+                reply = (f"✅ המסחר האוטומטי הופעל: האסטרטגיה המחמירה קונה בכסף אמיתי, עד "
+                         f"${self.cfg.live_max_trade:,.2f} לעסקה ועד ${self.cfg.live_budget:,.2f} בסך הכול.") \
+                    if words[1].lower() == "on" else "⏸ המסחר האוטומטי כובה: לא יישלחו הזמנות."
+        elif command == "/live":
+            reply = f"<pre>{escape(live.report(self.store, self.cfg))}</pre>"
         elif command == "/status":
             reply = self.status_text()
         elif command == "/report":
@@ -156,7 +193,10 @@ class App:
     def status_text(self) -> str:
         last = self.store.last_scan()
         now = self.clock()
-        lines = [f"מסחר: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>"]
+        lines = [f"מסחר בלחיצה: <b>{'פעיל' if self.store.trading_on else 'כבוי'}</b>",
+                 f"מסחר אוטומטי (מחמירה, כסף אמיתי): <b>{'פעיל' if self.store.auto_on else 'כבוי'}</b>"
+                 f" · נשאר בתקציב ${live.budget_left(self.store.live_positions(), self.cfg.live_budget):,.2f}"
+                 f" מתוך ${self.cfg.live_budget:,.2f}"]
         if last:
             lines.append(
                 f"סריקה אחרונה: לפני {(now - last['at']) / 60:.0f} דק׳, {last['markets']:,} שווקים, "

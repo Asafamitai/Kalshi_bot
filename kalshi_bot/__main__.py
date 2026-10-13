@@ -1,5 +1,5 @@
 """Command line: `scan` once and print, `run` the bot, `report` on how long contradictions last,
-`paper` on what paper trading would have made."""
+`paper` on what paper trading would have made, `live` on automatic trading with real money."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import argparse
 import fcntl
 import logging
 
-from . import alerts, episodes, paper
+from . import alerts, episodes, live, paper
 from .app import App
 from .config import Config, load_dotenv
 from .format import console_line
@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> None:
     rep.add_argument("--hours", type=float, default=24 * 7)
     pap = sub.add_parser("paper", help="the paper trading books: single contract vs locked pair")
     pap.add_argument("--latest", type=int, default=20, help="how many recent trades to list")
+    liv = sub.add_parser("live", help="automatic trading with real money: positions, P&L, budget")
+    liv.add_argument("--latest", type=int, default=20, help="how many recent positions to list")
     chats = sub.add_parser("telegram-chats", help="list chats that wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID")
     chats.add_argument("--paper", action="store_true",
                        help="the paper trading bot instead, to find KALSHI_LADDER_AUTO_BOT_CHAT_ID")
@@ -70,6 +72,8 @@ def main(argv: list[str] | None = None) -> None:
         print(episodes.report(Store(cfg.db_path), since_hours=args.hours))
     elif args.command == "paper":
         print(paper.report(Store(cfg.db_path), cfg, latest=args.latest))
+    elif args.command == "live":
+        print(live.report(Store(cfg.db_path), cfg, latest=args.latest))
     elif args.command == "telegram-chats":
         name, token = ("KALSHI_LADDER_AUTO_BOT_TOKEN", cfg.paper_telegram_token) if args.paper \
             else ("KALSHI_LADDER_BOT_TOKEN", cfg.telegram_token)
@@ -95,10 +99,11 @@ def main(argv: list[str] | None = None) -> None:
             paper_telegram = Telegram(cfg.paper_telegram_token)
         store = Store(cfg.db_path)
         log.info(
-            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, paper %s, telegram %s, "
-            "paper telegram %s",
+            "starting: every %ss, net saving >= %s, price %s-%s, depth >= %s, trading %s, auto %s (budget %s, "
+            "%s a trade), paper %s, telegram %s, paper telegram %s",
             cfg.scan_interval, cfg.min_net_saving, cfg.min_price, cfg.max_price, cfg.min_depth,
-            "on" if store.trading_on else "off", "on" if cfg.paper_trading else "off", "on" if telegram else "off",
+            "on" if store.trading_on else "off", "on" if store.auto_on else "off", cfg.live_budget,
+            cfg.live_max_trade, "on" if cfg.paper_trading else "off", "on" if telegram else "off",
             "on" if paper_telegram else "off",
         )
         App(cfg, store, cfg.kalshi_client(), cfg.kalshi_client(), telegram, paper_telegram=paper_telegram).run()

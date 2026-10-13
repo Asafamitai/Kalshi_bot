@@ -62,6 +62,7 @@ python -m kalshi_bot scan            # one pass over every open market, printed
 python -m kalshi_bot run             # every 5 minutes, alerts to Telegram
 python -m kalshi_bot report          # how long contradictions survived, and which rung moved
 python -m kalshi_bot paper           # the paper trading books
+python -m kalshi_bot live            # automatic trading with real money
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
 python -m kalshi_bot telegram-chats --paper  # the same for the paper trading bot
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
@@ -127,6 +128,42 @@ Trading is **off by default**: a tap then says what it would have bought.
 `/trading on` and `/trading off` in Telegram switch it (on needs a Kalshi
 key). Only users in `KALSHI_LADDER_BOT_ALLOWED_USER_IDS` (default: `KALSHI_LADDER_BOT_CHAT_ID`)
 can press buttons or send commands; anyone else gets silence.
+
+### Automatic trading with real money
+
+The strict paper book's strategy, traded for real. **Off by default**:
+`/auto on` in the alert bot switches it on (it needs a Kalshi key), `/auto off`
+switches it off. It is separate from `/trading`, which only governs the buy
+buttons.
+
+While on, every pass buys what the strict book would buy (its filters, its
+second read of both rungs, at most one position per event), with real orders:
+
+- one immediate-or-cancel limit order at the ask, sized to `LIVE_MAX_TRADE`
+  dollars including the fee;
+- only with money `LIVE_BUDGET` still has. Buys spend the budget and what
+  comes back refills it, but it is never topped up, so `LIVE_BUDGET` is the
+  most automatic trading can lose. The Kalshi cash balance must be readable
+  and cover the order too;
+- sold with an immediate-or-cancel order at the bid once the bid holds
+  `PAPER_TAKE_PROFIT` of the maximum profit and can take the whole position,
+  otherwise held to settlement. Before a sale the position on Kalshi is read,
+  and no more than is held is sold, since selling what isn't held would open
+  the other side. A position no longer held there (closed by hand) is closed
+  with nothing back;
+- an order whose outcome is unknown (no answer, or a 5xx) switches automatic
+  trading off and says so: nothing more is sent until someone has checked the
+  account and sent `/auto on` again. An order Kalshi refuses is reported and
+  the pass goes on.
+
+With it off, no order of any kind is sent, but what is held is still marked
+at its bid and recorded when its market settles. After every pass that
+bought, closed or hit a problem, the alert bot gets one message in Hebrew;
+`/live` (or `python -m kalshi_bot live`) shows the positions, P&L and what
+is left of the budget, and `/status` says whether it is on.
+
+To start: set `KALSHI_API_KEY_ID` and the private key, choose `LIVE_MAX_TRADE`
+and `LIVE_BUDGET`, restart, and send `/auto on`.
 
 ### Paper trading
 
@@ -236,6 +273,8 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_MIN_DEPTH`, `PAPER_MIN_VOLUME_24H` | 10, 0 | Single book, contracts. |
 | `PAPER_STRICT_MAX_SPREAD` | 0.05 | Strict book: widest book it buys from. |
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
+| `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
+| `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
 
 ## Tests
 

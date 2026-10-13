@@ -23,6 +23,10 @@ class FakeKalshi:
         self.orders = []
         self.can_trade = can_trade
         self.cash = D("1000")
+        # Contracts held per (ticker, side); what an order raises instead of filling; how many it fills.
+        self.held = {}
+        self.order_error = None
+        self.fill = None
 
     def iter_open_markets(self):
         source = self.scan_markets if self.scan_markets is not None else self.markets
@@ -36,7 +40,21 @@ class FakeKalshi:
 
     def buy(self, ticker, side, count, limit_price, client_order_id):
         self.orders.append((ticker, side, count, limit_price, client_order_id))
-        return {"already": False, "order_id": "o1", "filled": D(count), "avg_price": limit_price}
+        return self._fill(ticker, side, count, limit_price, 1)
+
+    def sell(self, ticker, side, count, limit_price, client_order_id):
+        self.orders.append(("sell", ticker, side, count, limit_price, client_order_id))
+        return self._fill(ticker, side, count, limit_price, -1)
+
+    def _fill(self, ticker, side, count, limit_price, sign):
+        if self.order_error is not None:
+            raise self.order_error
+        filled = D(count if self.fill is None else min(count, self.fill))
+        self.held[(ticker, side)] = self.held.get((ticker, side), D(0)) + sign * filled
+        return {"already": False, "order_id": "o1", "filled": filled, "avg_price": limit_price}
+
+    def position(self, ticker, side):
+        return self.held.get((ticker, side), D(0))
 
 
 class FakeTelegram:
@@ -312,7 +330,8 @@ def test_status_command(ladder, tmp_path):
     app, _, tg = make_app(ladder, tmp_path)
     app.scan_once()
     say(app, "/status")
-    assert "מסחר: <b>כבוי</b>" in tg.sent[-1][0] and "2 סתירות" in tg.sent[-1][0]
+    assert "מסחר בלחיצה: <b>כבוי</b>" in tg.sent[-1][0] and "2 סתירות" in tg.sent[-1][0]
+    assert "מסחר אוטומטי (מחמירה, כסף אמיתי): <b>כבוי</b>" in tg.sent[-1][0]
 
 
 # Episodes

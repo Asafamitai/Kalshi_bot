@@ -120,3 +120,30 @@ def test_get_markets_batches_tickers():
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
     client.get_markets([f"T{i}" for i in range(60)])
     assert [len(c["params"]["tickers"].split(",")) for c in session.calls] == [50, 10]
+
+
+@pytest.mark.parametrize("side, book_side, yes_price", [("no", "bid", "0.0200"), ("yes", "ask", "0.9800")])
+def test_sell_mirrors_buy(side, book_side, yes_price):
+    # Selling NO at 0.98 is buying YES at 0.02; selling YES at 0.98 is an ask at 0.98.
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(201, {"order_id": "o2", "fill_count": "11.00", "average_fill_price": yes_price})])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    result = client.sell("APP-T195", side, 11, Decimal("0.98"), "auto-x")
+    assert session.calls[0]["json"]["side"] == book_side and session.calls[0]["json"]["price"] == yes_price
+    assert result["filled"] == Decimal("11.00") and result["avg_price"] == Decimal("0.98")
+
+
+@pytest.mark.parametrize("body, yes, no", [
+    ({"market_positions": [{"ticker": "APP-T195", "position_fp": "-11.00"}]}, Decimal(0), Decimal(11)),
+    ({"market_positions": [{"ticker": "APP-T195", "position": 4}]}, Decimal(4), Decimal(0)),
+    ({"market_positions": []}, Decimal(0), Decimal(0)),
+    ({"market_positions": [{"ticker": "APP-T195"}]}, None, None),
+])
+def test_position_is_signed_yes_positive(body, yes, no):
+    key = ed25519.Ed25519PrivateKey.generate()
+    session = FakeSession([FakeResponse(200, body), FakeResponse(200, body)])
+    client = KalshiClient("https://example.test/trade-api/v2", key_id="kid", private_key=key, session=session)
+    assert (client.position("APP-T195", "yes"), client.position("APP-T195", "no")) == (yes, no)
+    call = session.calls[0]
+    assert call["url"].endswith("/portfolio/positions") and call["params"] == {"ticker": "APP-T195"}
+    assert "KALSHI-ACCESS-SIGNATURE" in call["headers"]
