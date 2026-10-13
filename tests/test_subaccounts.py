@@ -124,3 +124,15 @@ def test_command_line(ladder, tmp_path, monkeypatch, capsys):
     assert client.transfers == [(0, 1, D("40"))]
     with pytest.raises(SystemExit):
         cli.main(["subaccount", "fund"])
+
+
+def test_transfer_id_is_a_bare_uuid(ladder, tmp_path):
+    # Kalshi answers 400 "invalid UUID length" to anything else, such as a prefixed id.
+    import uuid as uuid_
+    app, client, _ = make_app(ladder, tmp_path)
+    say(app, "/subaccount create")
+    ids = []
+    client.transfer = lambda f, t, d, transfer_id: ids.append(transfer_id) or {}
+    say(app, "/subaccount fund 5")
+    (tid,) = ids
+    assert str(uuid_.UUID(tid)) == tid
