@@ -471,10 +471,17 @@ def test_nothing_but_pairs_in_a_market_that_ends_within_a_day(mk, tmp_path):
     assert len(book(app, "pair")) == 1  # a locked pair pays whatever happens
 
 
-def test_a_day_left_is_enough(mk, tmp_path):
+def test_a_day_left_is_enough_except_for_strict(mk, tmp_path):
+    # Strict trades calm markets only: at least CALM_MIN_HOURS_LEFT (a week) to go.
     app, _, tg = make_app(ending_in(mk, 25), tmp_path)
     app.scan_once()
-    assert len(alerts_sent(tg)) == 1 and len(book(app, "strict")) == 1 and len(book(app, "single")) == 1
+    assert len(alerts_sent(tg)) == 1 and book(app, "strict") == [] and len(book(app, "single")) == 1
+
+
+def test_strict_needs_a_week_left(mk, tmp_path):
+    app, _, _ = make_app(ending_in(mk, 169), tmp_path)
+    app.scan_once()
+    assert len(book(app, "strict")) == 1
 
 
 def test_the_expected_resolution_counts_when_it_comes_first(ladder, tmp_path):

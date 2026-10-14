@@ -37,7 +37,7 @@ from html import escape
 
 import requests
 
-from . import alerts, paper, subaccounts
+from . import alerts, calm, paper, subaccounts
 from .config import Config
 from .fees import order_cost, order_fee
 from .format import event_url, price
@@ -168,7 +168,8 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     left = budget_left(positions, cfg.live_budget)
     if left <= ZERO:
         return  # the budget is spent
-    picks = [v for v in alerts.reread(client, want, cfg) if paper.wanted(paper.STRICT, v, cfg, now)]
+    picks = [v for v in alerts.reread(client, want, cfg)
+             if paper.wanted(paper.STRICT, v, cfg, now) and calm.settled_history(client, v, cfg, now)]
     if not picks:
         return
     account = subaccounts.number(store, cfg)

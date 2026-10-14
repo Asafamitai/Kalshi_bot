@@ -233,3 +233,12 @@ def test_pages_are_read_a_little_apart(monkeypatch):
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
     assert [m["ticker"] for m in client.iter_open_markets()] == ["A", "B"]
     assert waits == [0.1]
+
+
+def test_candlesticks_go_to_the_series_path():
+    session = FakeSession([FakeResponse(200, {"candlesticks": [{"end_period_ts": 1}], "ticker": "KXW-26-T63"})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert client.candlesticks("KXW-26-T63", 100.5, 200.9) == [{"end_period_ts": 1}]
+    call = session.calls[0]
+    assert call["url"].endswith("/series/KXW/markets/KXW-26-T63/candlesticks")
+    assert call["params"] == {"start_ts": 100, "end_ts": 200, "period_interval": 60}

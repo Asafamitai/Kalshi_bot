@@ -16,6 +16,8 @@ def market(
     volume_24h="500.00",
     status="active",
     close_time="2030-10-31T23:59:00Z",  # after the tests' clock, so no market has run out of time
+    prev_yes_bid=None,
+    prev_yes_ask=None,
 ):
     """A market dict shaped like Kalshi's GET /markets response (dollar strings)."""
     yes_bid, yes_ask = Decimal(yes_bid), Decimal(yes_ask)
@@ -33,6 +35,9 @@ def market(
         "yes_ask_dollars": f"{yes_ask:.4f}",
         "no_bid_dollars": f"{1 - yes_ask:.4f}",
         "no_ask_dollars": f"{1 - yes_bid:.4f}",
+        # The book a day ago: unchanged unless a test says otherwise.
+        "previous_yes_bid_dollars": f"{Decimal(prev_yes_bid if prev_yes_bid is not None else yes_bid):.4f}",
+        "previous_yes_ask_dollars": f"{Decimal(prev_yes_ask if prev_yes_ask is not None else yes_ask):.4f}",
         "yes_bid_size_fp": yes_bid_size,
         "yes_ask_size_fp": yes_ask_size,
         "volume_24h_fp": volume_24h,
@@ -44,3 +49,12 @@ def market(
 @pytest.fixture
 def mk():
     return market
+
+
+@pytest.fixture(autouse=True)
+def fresh_calm_cache():
+    """The price-history cache lives for the process; each test starts without it."""
+    from kalshi_bot import calm
+    calm._cache.clear()
+    yield
+    calm._cache.clear()

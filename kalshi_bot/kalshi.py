@@ -129,6 +129,13 @@ class KalshiClient:
             out.extend(data.get("markets") or [])
         return out
 
+    def candlesticks(self, ticker: str, start: float, end: float, minutes: int = 60) -> list[dict]:
+        """The market's price history in `minutes` candles; only periods with any activity are listed."""
+        series = ticker.split("-")[0]
+        data = self._request("GET", f"/series/{series}/markets/{ticker}/candlesticks",
+                             params={"start_ts": int(start), "end_ts": int(end), "period_interval": minutes})
+        return data.get("candlesticks") or []
+
     def event_markets(self, event_ticker: str) -> list[dict]:
         """Every market of one event: its whole ladder."""
         data = self._request("GET", "/markets", params={"event_ticker": event_ticker, "limit": 1000})
