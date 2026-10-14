@@ -303,7 +303,7 @@ def test_without_telegram_it_logs(ladder, tmp_path, caplog):
     client = FakeKalshi(ladder)
     store = Store(str(tmp_path / "t.sqlite3"))
     store.set_setting("auto", "on")
-    app = App(Config(), store, client, client, None, clock=Clock())
+    app = App(Config(underlying_min_z=0), store, client, client, None, clock=Clock())
     with caplog.at_level("INFO", logger="kalshi_bot"):
         app.scan_once()
     assert any("LIVE" in r.message for r in caplog.records) and len(store.live_positions()) == 1

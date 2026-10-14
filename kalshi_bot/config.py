@@ -93,13 +93,13 @@ class Config:
     # KALSHI_LADDER_AUTO_BOT, or else the primary account.
     live_subaccount: int | None = None
     # Calm markets only, for the strict strategy (automatic trading and its
-    # paper twin): each rung's mid moved at most CALM_MAX_MOVE_24H in a day,
-    # the contract bought stayed within CALM_MAX_RANGE over CALM_HISTORY_DAYS,
-    # and the market resolves at least CALM_MIN_HOURS_LEFT away. 0 turns one off.
-    calm_max_move_24h: Decimal = Decimal("0.05")
-    calm_max_range: Decimal = Decimal("0.10")
-    calm_history_days: float = 3
+    # paper twin): the market resolves at least CALM_MIN_HOURS_LEFT away, and
+    # its underlying (a yield, an oil or gas price) sits at least
+    # UNDERLYING_MIN_Z expected moves from the strike, on the side the
+    # contract pays on. Markets with no known underlying are not bought.
+    # 0 turns a check off.
     calm_min_hours_left: float = 168
+    underlying_min_z: float = 2.0
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -139,10 +139,8 @@ class Config:
             min_depth=num("MIN_DEPTH", d.min_depth),
             min_volume_24h=num("MIN_VOLUME_24H", d.min_volume_24h),
             min_ref_volume_24h=num("MIN_REF_VOLUME_24H", d.min_ref_volume_24h),
-            calm_max_move_24h=num("CALM_MAX_MOVE_24H", d.calm_max_move_24h),
-            calm_max_range=num("CALM_MAX_RANGE", d.calm_max_range),
-            calm_history_days=float(env.get("CALM_HISTORY_DAYS") or d.calm_history_days),
             calm_min_hours_left=float(env.get("CALM_MIN_HOURS_LEFT") or d.calm_min_hours_left),
+            underlying_min_z=float(env.get("UNDERLYING_MIN_Z") or d.underlying_min_z),
             min_hours_left=float(env.get("MIN_HOURS_LEFT") or d.min_hours_left),
             cooldown_hours=float(env.get("COOLDOWN_HOURS") or d.cooldown_hours),
             max_alerts_per_pass=int(env.get("MAX_ALERTS_PER_PASS") or d.max_alerts_per_pass),

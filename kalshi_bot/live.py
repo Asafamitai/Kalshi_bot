@@ -169,7 +169,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     if left <= ZERO:
         return  # the budget is spent
     picks = [v for v in alerts.reread(client, want, cfg)
-             if paper.wanted(paper.STRICT, v, cfg, now) and calm.settled_history(client, v, cfg, now)]
+             if paper.wanted(paper.STRICT, v, cfg, now) and calm.outcome_steady(client, v, cfg, now)]
     if not picks:
         return
     account = subaccounts.number(store, cfg)
