@@ -33,7 +33,7 @@ from collections import Counter
 from decimal import Decimal
 from html import escape
 
-from . import alerts
+from . import alerts, calm
 from .config import Config
 from .fees import fee_per_contract, order_cost, order_fee
 from .format import event_url, pair, price
@@ -72,7 +72,8 @@ def single_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
 
 
 def strict_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
-    return alerts.alertable(v, cfg, now) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
+    return (alerts.alertable(v, cfg, now) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
+            and calm.steady(v, cfg, now))
 
 
 def wanted(strategy: str, v: Violation, cfg: Config, now: float | None = None) -> bool:
@@ -191,7 +192,8 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     for s in books:
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
-        picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg, now)]
+        picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg, now)
+                 and (s != STRICT or calm.settled_history(client, v, cfg, now))]
         picks.sort(key=lambda v: pair(v)["worst"] if s == PAIR else v.net_saving, reverse=True)
         for v in picks:
             if v.safer.event_ticker in busy[s]:

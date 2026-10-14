@@ -18,6 +18,20 @@ DEMO_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
 ORDERS_PATH = "/portfolio/events/orders"
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+# A full scan reads over a hundred pages, and a second bot may be scanning
+# too: Kalshi's rate limit answers 429 to a burst. Retries wait 1, 2, 4, ...
+# up to 30 seconds (about a minute and a half in all), or as long as its
+# Retry-After says, and pages are read a little apart.
+_ATTEMPTS = 8
+_PAGE_PAUSE = 0.1
+
+
+def _retry_wait(resp, attempt: int) -> float:
+    """Kalshi's Retry-After, if it sent one; else 1, 2, 4, ... up to 30 seconds."""
+    try:
+        return min(float((getattr(resp, "headers", None) or {}).get("Retry-After")), 60.0)
+    except (TypeError, ValueError):
+        return float(min(2**attempt, 30))
 
 
 def _sub(fields: dict, subaccount: int) -> dict:
@@ -81,13 +95,13 @@ class KalshiClient:
         url = self.base_url + path
         # Orders are only retried on 429: a 5xx may have been accepted already.
         retry_on = _RETRY_STATUS if method == "GET" else {429}
-        for attempt in range(5):
+        for attempt in range(_ATTEMPTS):
             headers = self.auth_headers(method, url) if signed else {}
             resp = self.session.request(
                 method, url, params=params, json=json, headers=headers, timeout=self.timeout
             )
-            if resp.status_code in retry_on and attempt < 4:
-                time.sleep(min(2**attempt, 10))
+            if resp.status_code in retry_on and attempt < _ATTEMPTS - 1:
+                time.sleep(_retry_wait(resp, attempt))
                 continue
             if resp.status_code >= 400:
                 raise KalshiError(resp.status_code, resp.text)
@@ -106,12 +120,39 @@ class KalshiClient:
             cursor = data.get("cursor")
             if not cursor:
                 return
+            time.sleep(_PAGE_PAUSE)
 
     def get_markets(self, tickers: list[str]) -> list[dict]:
         out = []
         for i in range(0, len(tickers), 50):
             data = self._request("GET", "/markets", params={"tickers": ",".join(tickers[i : i + 50])})
             out.extend(data.get("markets") or [])
+        return out
+
+    def candlesticks(self, ticker: str, start: float, end: float, minutes: int = 60) -> list[dict]:
+        """The market's price history in `minutes` candles; only periods with any activity are listed."""
+        series = ticker.split("-")[0]
+        data = self._request("GET", f"/series/{series}/markets/{ticker}/candlesticks",
+                             params={"start_ts": int(start), "end_ts": int(end), "period_interval": minutes})
+        return data.get("candlesticks") or []
+
+    def event_markets(self, event_ticker: str) -> list[dict]:
+        """Every market of one event: its whole ladder."""
+        data = self._request("GET", "/markets", params={"event_ticker": event_ticker, "limit": 1000})
+        return data.get("markets") or []
+
+    def settled_markets(self, series_ticker: str, since: float, pages: int = 5) -> list[dict]:
+        """The series' markets settled since `since` (epoch seconds), at most `pages` pages of 1000."""
+        out, cursor = [], None
+        for _ in range(pages):
+            params = {"series_ticker": series_ticker, "status": "settled", "min_close_ts": int(since), "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            data = self._request("GET", "/markets", params=params)
+            out.extend(data.get("markets") or [])
+            cursor = data.get("cursor")
+            if not cursor:
+                break
         return out
 
     def balance(self, subaccount: int = 0) -> Decimal | None:

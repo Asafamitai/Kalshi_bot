@@ -34,6 +34,7 @@ def alertable(v: Violation, cfg: Config, now: float | None = None) -> bool:
         and cfg.min_price <= v.ask <= cfg.max_price
         and v.ask_size >= cfg.min_depth
         and v.safer.volume_24h >= cfg.min_volume_24h
+        and v.dominated.volume_24h >= cfg.min_ref_volume_24h
         and enough_time(v, cfg, now)
     )
 

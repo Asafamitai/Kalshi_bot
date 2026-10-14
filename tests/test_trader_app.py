@@ -29,6 +29,8 @@ class FakeKalshi:
         self.held = {}
         self.order_error = None
         self.fill = None
+        # The series' settled markets, for zooms.
+        self.settled = []
 
     def iter_open_markets(self):
         source = self.scan_markets if self.scan_markets is not None else self.markets
@@ -36,6 +38,12 @@ class FakeKalshi:
 
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
+
+    def event_markets(self, event_ticker):
+        return [copy.deepcopy(m) for m in self.markets.values() if m["event_ticker"] == event_ticker]
+
+    def settled_markets(self, series_ticker, since, pages=5):
+        return copy.deepcopy(self.settled)
 
     def balance(self, subaccount=0):
         self.subaccounts.append(("balance", subaccount))
@@ -67,6 +75,15 @@ class FakeKalshi:
             raise self.order_error
         self.transfers = getattr(self, "transfers", []) + [(from_subaccount, to_subaccount, dollars)]
         return {}
+
+    def candlesticks(self, ticker, start, end, minutes=60):
+        """One candle at today's book unless a test set a history; a history is (yes bid, yes ask) pairs."""
+        self.history_reads = getattr(self, "history_reads", 0) + 1
+        pairs = getattr(self, "history", {}).get(ticker)
+        if pairs is None:
+            m = self.markets.get(ticker, {})
+            pairs = [(m.get("yes_bid_dollars", "0"), m.get("yes_ask_dollars", "0"))]
+        return [{"yes_bid": {"close_dollars": str(b)}, "yes_ask": {"close_dollars": str(a)}} for b, a in pairs]
 
     def position(self, ticker, side, subaccount=0):
         self.subaccounts.append(("position", subaccount))
@@ -240,7 +257,8 @@ def test_tap_buys_with_deterministic_order_id(ladder, tmp_path):
     tap(app, data)
     alert_id = data.split(":")[1]
     assert client.orders == [("APP-T195", "no", 50, D("0.86"), f"lk-{alert_id}-50")]
-    assert tg.sent[-1][0].startswith("✅ נקנו 50 מתוך 50 NO APP-T195")
+    assert tg.sent[-2][0].startswith("✅ נקנו 50 מתוך 50 NO APP-T195")
+    assert tg.sent[-1][0].startswith("🔍 <b>זום אין</b>")  # then a closer look at what was bought
     assert tg.cleared == [7]
     tap(app, data)  # double tap
     assert len(client.orders) == 1 and tg.answers[-1] == "כבר טופל."

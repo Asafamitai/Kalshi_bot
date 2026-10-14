@@ -63,6 +63,16 @@ def test_iter_open_markets_follows_cursor():
     assert session.calls[1]["params"]["cursor"] == "c1"
 
 
+def test_settled_markets_reads_the_series_since_a_time_and_stops_at_the_page_limit():
+    session = FakeSession([FakeResponse(200, {"markets": [{"ticker": "A"}], "cursor": "c1"}),
+                           FakeResponse(200, {"markets": [{"ticker": "B"}], "cursor": "c2"})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert [m["ticker"] for m in client.settled_markets("KXAPP", 1_700_000_000.5, pages=2)] == ["A", "B"]
+    assert session.calls[0]["params"] == {"series_ticker": "KXAPP", "status": "settled",
+                                          "min_close_ts": 1_700_000_000, "limit": 1000}
+    assert session.calls[1]["params"]["cursor"] == "c1" and len(session.calls) == 2
+
+
 def test_buy_no_goes_to_v2_as_a_yes_ask():
     key = ed25519.Ed25519PrivateKey.generate()
     session = FakeSession([FakeResponse(201, {"order_id": "o1", "fill_count": "11.00", "remaining_count": "0.00",
@@ -187,3 +197,48 @@ def test_transfer_in_cents_with_an_id():
                             "amount_cents": 2550, "exchange_index": 0}
     with pytest.raises(ValueError):
         client.transfer(0, 4, Decimal("0.005"), "auto-t2")
+
+
+class Limited(FakeResponse):
+    def __init__(self, retry_after=None):
+        super().__init__(429, '{"error":{"code":"too_many_requests"}}')
+        self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+
+def test_rate_limit_waits_longer_before_giving_up(monkeypatch):
+    # Seven 429s in a row, then the page: a burst no longer fails the scan after 15 seconds.
+    waits = []
+    monkeypatch.setattr("kalshi_bot.kalshi.time.sleep", waits.append)
+    session = FakeSession([Limited() for _ in range(7)] + [FakeResponse(200, {"markets": [{"ticker": "A"}]})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert [m["ticker"] for m in client.iter_open_markets()] == ["A"]
+    assert waits == [1, 2, 4, 8, 16, 30, 30]
+
+
+def test_rate_limit_honours_retry_after_and_still_gives_up(monkeypatch):
+    waits = []
+    monkeypatch.setattr("kalshi_bot.kalshi.time.sleep", waits.append)
+    session = FakeSession([Limited("3")] + [Limited() for _ in range(7)])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    with pytest.raises(KalshiError) as e:
+        client.get_markets(["A"])
+    assert e.value.status == 429 and len(session.calls) == 8 and waits[0] == 3.0
+
+
+def test_pages_are_read_a_little_apart(monkeypatch):
+    waits = []
+    monkeypatch.setattr("kalshi_bot.kalshi.time.sleep", waits.append)
+    session = FakeSession([FakeResponse(200, {"markets": [{"ticker": "A"}], "cursor": "c1"}),
+                           FakeResponse(200, {"markets": [{"ticker": "B"}], "cursor": ""})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert [m["ticker"] for m in client.iter_open_markets()] == ["A", "B"]
+    assert waits == [0.1]
+
+
+def test_candlesticks_go_to_the_series_path():
+    session = FakeSession([FakeResponse(200, {"candlesticks": [{"end_period_ts": 1}], "ticker": "KXW-26-T63"})])
+    client = KalshiClient("https://example.test/trade-api/v2", session=session)
+    assert client.candlesticks("KXW-26-T63", 100.5, 200.9) == [{"end_period_ts": 1}]
+    call = session.calls[0]
+    assert call["url"].endswith("/series/KXW/markets/KXW-26-T63/candlesticks")
+    assert call["params"] == {"start_ts": 100, "end_ts": 200, "period_interval": 60}

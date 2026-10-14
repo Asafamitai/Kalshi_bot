@@ -215,6 +215,10 @@ def test_takes_profit_with_a_real_sale(ladder, mk, tmp_path):
     (p,) = positions(app)
     assert (p["status"], p["exit_reason"], p["count"], p["proceeds"]) == ("closed", "sold", 0, D("10.76"))
     assert "+$1.20" in live_messages(tg)[-1]  # 10.76 - 9.56
+    assert '✅ <a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">APP-T195</a> · נמכר' \
+        in live_messages(tg)[-1]
+    say(app, "/live")
+    assert "פוזיציות פתוחות" not in tg.sent[-1][0]  # nothing open, no list
 
 
 def test_sells_no_more_than_is_held(ladder, mk, tmp_path):
@@ -281,6 +285,8 @@ def test_live_command_and_status(ladder, tmp_path):
     say(app, "/live")
     assert "Automatic trading (strict, real money): ON" in tg.sent[-1][0]
     assert "11 NO APP-T195 @0.86" in tg.sent[-1][0]
+    link = '<a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">APP-T195</a>'
+    assert f"<b>פוזיציות פתוחות</b>\n• 11 NO {link} ב-0.86 · $9.56 · לפי ה-bid " in tg.sent[-1][0]
     say(app, "/status")
     assert "מסחר אוטומטי (מחמירה, כסף אמיתי): <b>פעיל</b> בחשבון הראשי" in tg.sent[-1][0]
     assert "נשאר בתקציב $90.44 מתוך $100.00" in tg.sent[-1][0] and "1 פוזיציות פתוחות" in tg.sent[-1][0]

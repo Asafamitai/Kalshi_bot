@@ -64,6 +64,8 @@ python -m kalshi_bot report          # how long contradictions survived, and whi
 python -m kalshi_bot paper           # the paper trading books
 python -m kalshi_bot live            # automatic trading with real money
 python -m kalshi_bot subaccount      # its Kalshi subaccount: show, create, fund 100, withdraw 100
+python -m kalshi_bot zoom            # a closer look at every open automatic trading position
+python -m kalshi_bot zoom TICKER --side no   # ... or at one market
 python -m kalshi_bot telegram-chats  # who wrote to the bot, to find KALSHI_LADDER_BOT_CHAT_ID
 python -m kalshi_bot telegram-chats --paper  # the same for KALSHI_LADDER_AUTO_BOT
 ./run.sh                             # `run`, restarted whenever it exits (bot.log)
@@ -94,6 +96,12 @@ Only the best of them become **alerts**:
 - buy price between `MIN_PRICE` and `MAX_PRICE` (below is lottery tickets,
   above is pennies against dollars);
 - at least `MIN_DEPTH` contracts at the ask and `MIN_VOLUME_24H` traded in a day;
+- the dominated rung traded at least `MIN_REF_VOLUME_24H` (20) contracts in a
+  day. Its mid is the price the saving is measured against, and a rung that
+  barely trades has a mid that means nothing: one live trade bought YES on
+  "above 24.1%" because "above 25.6%", with 3 contracts traded all day and a
+  0.32/0.40 book, had a 0.36 mid. Since the strict book and automatic trading
+  use these filters, the same holds for them;
 - at least `MIN_HOURS_LEFT` (24) hours before the market stops trading or its
   outcome is due, whichever Kalshi gives first (`close_time`,
   `expected_expiration_time`). A live game moves faster than a scan every few
@@ -197,6 +205,40 @@ the private key, choose `LIVE_MAX_TRADE` and `LIVE_BUDGET`, and restart. Then,
 in KALSHI_LADDER_AUTO_BOT, for a subaccount of its own, `/subaccount create`
 and `/subaccount fund 100`; and `/auto on`.
 
+### Zoom: a closer look at each trade
+
+The rule says one of two prices is wrong, not which. A zoom puts numbers on
+that, from Kalshi's own data, and comes after every trade: KALSHI_LADDER_AUTO_BOT
+gets one for each position automatic trading opens, and the alert bot one
+after each buy through a button. `/zoom` in KALSHI_LADDER_AUTO_BOT gives one
+for each open position; `/zoom TICKER [yes|no]` in either bot (or
+`python -m kalshi_bot zoom`) for any threshold market. It shows:
+
+- **the ladder now**, every rung with its book on the side bought, 24-hour
+  volume and open interest, the rung bought and its reference marked. A flat
+  run of prices across several strikes says the market gives the band
+  between them no chance at all;
+- **the reference rung** it was measured against (without one, the rung the
+  scan would pick now), with a warning when it trades less than
+  `MIN_REF_VOLUME_24H`;
+- **how the series' recent events settled**: the `expiration_value` of every
+  event in the same series settled in the last 60 days, and in which of them
+  the contract bought would have paid, over the window and over the latest 7,
+  with their mean and spread;
+- **the band between the two strikes**, which the safer contract pays in and
+  the reference doesn't: what the market charges for it (nothing, since that
+  is the contradiction) against how often it happened. Often means the dear
+  rung is the wrong one and the cheap one really was cheap; hardly ever means
+  the two are worth about the same and the saving is smaller than it looks;
+- **the bottom line**: how often it paid against what was paid per contract
+  with the fee, and the expected value on the position; plus warnings when
+  the latest event settled near the strike, or the market sits far from the
+  history (it may know something the history doesn't, such as partial data).
+
+History is a base rate, not a forecast: a series can change regime, so the
+latest 7 are shown apart from the window. A zoom only reads; it never stops a
+trade, and if it fails the pass goes on and the message says so.
+
 ### Paper trading
 
 On by default (`PAPER_TRADING=off` to stop it), with no keys and no money.
@@ -260,7 +302,7 @@ one message, in Hebrew: each trade bought (contracts, price, cost, saving,
 and whether it also passed the alert filters, or the locked minimum for a
 pair), each trade closed with its P&L, and each book's cash. A long pass is
 split under Telegram's message limit. `/paper` there gives the report, beside
-the automatic trading commands (`/auto`, `/live`, `/status`, `/subaccount`);
+the automatic trading commands (`/auto`, `/live`, `/status`, `/subaccount`, `/zoom`);
 any other message gets a short help. Only `KALSHI_LADDER_AUTO_BOT_ALLOWED_USER_IDS`
 (default: its chat id) are answered.
 
@@ -296,6 +338,7 @@ belongs to another project in the same environment is never picked up.
 | `MIN_NET_SAVING` | 0.01 | Alerted: saving after the fee. |
 | `MIN_PRICE`, `MAX_PRICE` | 0.30, 0.90 | Buy price band. |
 | `MIN_DEPTH`, `MIN_VOLUME_24H` | 50, 50 | Contracts. |
+| `MIN_REF_VOLUME_24H` | 20 | Contracts the dominated (reference) rung traded in a day. |
 | `MIN_HOURS_LEFT` | 24 | Hours before the market stops trading or resolves; also the single and strict books'. 0 turns it off. |
 | `COOLDOWN_HOURS` | 12 | Per option. |
 | `MAX_ALERTS_PER_PASS` | 10 | |

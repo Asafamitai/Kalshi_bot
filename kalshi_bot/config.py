@@ -56,6 +56,9 @@ class Config:
     max_price: Decimal = Decimal("0.90")
     min_depth: Decimal = Decimal("50")
     min_volume_24h: Decimal = Decimal("50")
+    # The dearer rung's mid is the price the saving is measured against; a
+    # rung that barely trades has a mid that means nothing.
+    min_ref_volume_24h: Decimal = Decimal("20")
     # Hours left before the market stops trading or resolves; live games move faster than a scan.
     min_hours_left: float = 24
     cooldown_hours: float = 12
@@ -89,6 +92,14 @@ class Config:
     # 1-63 a numbered subaccount. Unset, it is the one the bot created as
     # KALSHI_LADDER_AUTO_BOT, or else the primary account.
     live_subaccount: int | None = None
+    # Calm markets only, for the strict strategy (automatic trading and its
+    # paper twin): each rung's mid moved at most CALM_MAX_MOVE_24H in a day,
+    # the contract bought stayed within CALM_MAX_RANGE over CALM_HISTORY_DAYS,
+    # and the market resolves at least CALM_MIN_HOURS_LEFT away. 0 turns one off.
+    calm_max_move_24h: Decimal = Decimal("0.05")
+    calm_max_range: Decimal = Decimal("0.10")
+    calm_history_days: float = 3
+    calm_min_hours_left: float = 168
     # Optional: a Telegram bot of its own for paper trading, so its messages
     # stay apart from the alerts.
     paper_telegram_token: str | None = field(default=None, repr=False)
@@ -127,6 +138,11 @@ class Config:
             max_price=num("MAX_PRICE", d.max_price),
             min_depth=num("MIN_DEPTH", d.min_depth),
             min_volume_24h=num("MIN_VOLUME_24H", d.min_volume_24h),
+            min_ref_volume_24h=num("MIN_REF_VOLUME_24H", d.min_ref_volume_24h),
+            calm_max_move_24h=num("CALM_MAX_MOVE_24H", d.calm_max_move_24h),
+            calm_max_range=num("CALM_MAX_RANGE", d.calm_max_range),
+            calm_history_days=float(env.get("CALM_HISTORY_DAYS") or d.calm_history_days),
+            calm_min_hours_left=float(env.get("CALM_MIN_HOURS_LEFT") or d.calm_min_hours_left),
             min_hours_left=float(env.get("MIN_HOURS_LEFT") or d.min_hours_left),
             cooldown_hours=float(env.get("COOLDOWN_HOURS") or d.cooldown_hours),
             max_alerts_per_pass=int(env.get("MAX_ALERTS_PER_PASS") or d.max_alerts_per_pass),
