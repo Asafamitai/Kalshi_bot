@@ -209,11 +209,17 @@ the outcome is unlikely to flip before the market resolves:
   leaves out game-day sports and daily crypto;
 - its underlying sits at least `UNDERLYING_MIN_Z` (2) expected moves from
   the strike, on the side the contract pays on. The underlying is the number
-  the market settles on: a Treasury yield, WTI or Brent, the AAA gas
-  average. Kalshi records it for every market it settles, and some series
-  settle every hour (yields, `KX10YRRATEH`) or every day (`KXWTI`,
-  `KXAAAGASD` and one per state), so their settled markets are its history,
-  from the market's own data source. The expected move is the history's
+  the market settles on: Treasury yields (2, 5, 7, 10, 30 years), WTI, Brent
+  and natural gas, gold, silver and copper, the S&P 500 and Nasdaq-100,
+  Bitcoin, Ethereum, Solana, XRP and Dogecoin, GBP, JPY, CAD, NOK, BRL and
+  NZD against the dollar, and the AAA gas average (national and by state).
+  Kalshi records it for every market it settles, and some series settle
+  every hour (`KX10YRRATEH`, `KXBTCD`) or every day (`KXWTI`, `KXGOLDD`,
+  `KXINX`, `KXUSDJPYAD`, `KXAAAGASD`...), so their settled markets are its
+  history, from the market's own data source. A series is matched by the
+  asset's name and a known price suffix, whole (`KXBTCMAXY` yes, `KXBTCDOM`
+  no), and a strike more than four times off the underlying's scale is
+  taken for a different quantity. The expected move is the history's
   hourly volatility times the square root of the hours left; z is the
   distance to the strike in those moves. A plain random walk: it knows
   nothing of news, and a "touch" market (a yearly high or low) crosses about

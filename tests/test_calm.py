@@ -59,12 +59,21 @@ def strict(app):
     ("KXWTIMIN", "KXWTI"), ("KXWTIW", "KXWTI"), ("WTIMAX", "KXWTI"), ("KXBRENTW", "KXBRENTD"),
     ("KXAAAGASMAXM", "KXAAAGASD"), ("KXAAAGASMINM", "KXAAAGASD"), ("KXAAAGASW", "KXAAAGASD"),
     ("KXAAAGASMAXCA", "KXAAAGASDCA"), ("KXAAAGASDTX", "KXAAAGASDTX"), ("KXAAAGASWNJ", "KXAAAGASDNJ"),
+    ("KXBTCMAXY", "KXBTCD"), ("KXETHMINMON", "KXETHD"), ("KXSOLD26", "KXSOLD"), ("KXRIPPLEMAXY", "KXXRPD"),
+    ("KXXRPMAXY", "KXXRPD"), ("KXDOGEMAXW", "KXDOGED"), ("KXINXY", "KXINX"), ("KXNDQDIRY", "KXNASDAQ100"),
+    ("KXGOLDDIRY", "KXGOLDD"), ("KXSILVERMON", "KXSILVERD"), ("KXNGASMAX", "KXNATGASD"), ("KXBRENTW", "KXBRENTD"),
+    ("KXUSDNOKAW", "KXUSDNOKAD"), ("KXUSDCADAW", "KXUSDCADAD"), ("USDJPYMAX", "KXUSDJPYAD"),
 ])
 def test_series_find_their_source(series, source):
     assert underlying.source_for(series).series == source
 
 
-@pytest.mark.parametrize("series", ["KXOPENVREQ", "KXVOTEGENERAL", "KXNCAAF1HSPREAD", "KXAMZNCC", "KXAPP"])
+@pytest.mark.parametrize("series", [
+    "KXOPENVREQ", "KXVOTEGENERAL", "KXNCAAF1HSPREAD", "KXAMZNCC", "KXAPP",
+    # A known asset name followed by something that isn't a price: dominance, holdings, the DOGE agency...
+    "KXBTCDOM", "KXBTCVSETH", "KXSOLAR", "KXSOLICITORGENERAL", "KXSOLDATHOLDINGS", "KXGOLDCARD",
+    "KXGOLDENBACHELOR", "KXDOGESAVINGS", "KXWTIVSBRENT", "KXSILVERSTATES", "KXCOPPEROPEN", "KXETHFLIP",
+])
 def test_series_without_a_source(series):
     assert underlying.source_for(series) is None
 
@@ -87,6 +96,15 @@ def test_outlook_numbers(mk):
     assert (o.source, o.latest, o.status_quo) == ("KXWTI", D("185"), True)
     assert o.hourly == pytest.approx(hourly, rel=0.05)
     assert o.z == pytest.approx(10 / (hourly * math.sqrt(240)), rel=0.05)  # ~3.2
+
+
+def test_a_strike_on_another_scale_is_not_that_underlying(mk):
+    # A WTI series whose strikes are percentages: 4.5 against WTI at 185 is not the same quantity.
+    m = mk("KXWTIW-26OCT31-T4", 4.5, "0.14", "0.16", event="KXWTIW-26OCT31", close_time=iso(NOW + 10 * DAY))
+    from test_trader_app import FakeKalshi
+    client = FakeKalshi([])
+    client.settled = settled(185)
+    assert underlying.outlook(client, Rung.from_market(m), "no", NOW) is None
 
 
 # The check in the strategy
