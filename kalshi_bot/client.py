@@ -112,6 +112,14 @@ class KalshiClient:
         )
         return data.get("candlesticks", [])
 
+    def get_event_candlesticks(self, series_ticker: str, event_ticker: str, start_ts: int, end_ts: int,
+                               period_minutes: int = 1) -> dict:
+        """Candles for every market in an event: {market_tickers, market_candlesticks, adjusted_end_ts}."""
+        return self._request(
+            "GET", f"/series/{series_ticker}/events/{event_ticker}/candlesticks",
+            params={"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_minutes},
+        )
+
     # ---- portfolio (authenticated) ----
 
     def get_balance(self) -> dict:

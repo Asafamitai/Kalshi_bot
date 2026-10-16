@@ -76,6 +76,7 @@ def simulate_entry(market: dict, candles: list[dict], p: StrategyParams, stake: 
             "cost": round(c.price * count, 4),
             "fee": fee,
             "seconds_to_close": round(c.seconds_to_close),
+            "close_date": market["close_time"][:10],
             "result": market["result"],
             "won": won,
             "pnl": net_profit_if_win(c.price, count, p.fee_rate) if won else -round(c.price * count + fee, 4),
@@ -100,7 +101,12 @@ def run_backtest(client: KalshiClient, hours: float, p: StrategyParams, stake: f
             break
     log.info("backtesting %d settled markets from the last %.1fh", len(markets), hours)
 
-    def fetch(m: dict) -> list[dict] | None:
+    # One request per event returns candles for all of its markets (crypto events have ~20-190 strikes).
+    events: dict[str, list[dict]] = defaultdict(list)
+    for m in markets:
+        events[m["event_ticker"]].append(m)
+
+    def fetch_market(m: dict) -> list[dict] | None:
         close_ts = int(parse_time(m["close_time"]).timestamp())
         try:
             return client.get_candlesticks(series_of(m["event_ticker"]), m["ticker"],
@@ -109,15 +115,31 @@ def run_backtest(client: KalshiClient, hours: float, p: StrategyParams, stake: f
             log.debug("no candles for %s: %s", m["ticker"], e)
             return None
 
-    trades, skipped = [], 0
+    def fetch_event(group: list[dict]) -> list[tuple[dict, list[dict] | None]]:
+        closes = [int(parse_time(m["close_time"]).timestamp()) for m in group]
+        start_ts, end_ts = min(closes) - p.max_seconds_to_close - 60, max(closes)
+        try:
+            data = client.get_event_candlesticks(series_of(group[0]["event_ticker"]),
+                                                 group[0]["event_ticker"], start_ts, end_ts)
+            by_ticker = dict(zip(data.get("market_tickers", []), data.get("market_candlesticks", [])))
+            truncated = data.get("adjusted_end_ts", end_ts) < end_ts
+        except KalshiError as e:
+            log.debug("no event candles for %s: %s", group[0]["event_ticker"], e)
+            by_ticker, truncated = {}, True
+        return [(m, by_ticker[m["ticker"]] if m["ticker"] in by_ticker and not truncated else fetch_market(m))
+                for m in group]
+
+    trades, skipped, done = [], 0, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i, (m, candles) in enumerate(zip(markets, pool.map(fetch, markets)), 1):
-            if candles is None:
-                skipped += 1
-            elif (t := simulate_entry(m, candles, p, stake)):
-                trades.append(t)
-            if i % 500 == 0:
-                log.info("  %d/%d markets, %d entries so far", i, len(markets), len(trades))
+        for i, results in enumerate(pool.map(fetch_event, events.values()), 1):
+            for m, candles in results:
+                if candles is None:
+                    skipped += 1
+                elif (t := simulate_entry(m, candles, p, stake)):
+                    trades.append(t)
+            done += len(results)
+            if i % 200 == 0:
+                log.info("  %d/%d markets, %d entries so far", done, len(markets), len(trades))
 
     if csv_path and trades:
         with open(csv_path, "w", newline="") as f:
@@ -133,6 +155,14 @@ def run_backtest(client: KalshiClient, hours: float, p: StrategyParams, stake: f
         f"  pnl {sum(t['pnl'] for t in g):+8.2f}"
         for s, g in sorted(by_series.items(), key=lambda kv: -len(kv[1]))[:15]
     ]
+    by_day: dict[str, list[dict]] = defaultdict(list)
+    for t in trades:
+        by_day[t["close_date"]].append(t)
+    day_lines = [
+        f"  {d}  {len(g):>5} trades  win {100 * sum(t['won'] for t in g) / len(g):5.1f}%"
+        f"  pnl {sum(t['pnl'] for t in g):+8.2f}"
+        for d, g in sorted(by_day.items())
+    ]
     losses = [t for t in trades if not t["won"]]
     loss_lines = [f"  {t['ticker']} {t['side']} @ {t['price']:.2f}, {t['seconds_to_close']}s before close"
                   for t in losses[:15]]
@@ -143,6 +173,8 @@ def run_backtest(client: KalshiClient, hours: float, p: StrategyParams, stake: f
         f"{p.min_seconds_to_close}-{p.max_seconds_to_close}s to close, max spread {p.max_spread:.2f}",
         "",
         summarize(trades),
+        "",
+        "By day (UTC close date):", *day_lines,
         "",
         "Top series:", *series_lines,
         "",

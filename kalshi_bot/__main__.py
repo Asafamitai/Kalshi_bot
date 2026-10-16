@@ -59,7 +59,7 @@ def main(argv=None) -> int:
     bt = sub.add_parser("backtest", help="replay the strategy on recently settled markets")
     add_strategy_args(bt)
     bt.add_argument("--hours", type=float, default=24, help="look back this many hours (default 24)")
-    bt.add_argument("--max-markets", type=int, default=3000)
+    bt.add_argument("--max-markets", type=int, default=100_000)
     bt.add_argument("--series", default=None, help="only this series ticker, e.g. KXBTCD")
     bt.add_argument("--csv", default=None, help="write every simulated trade to this CSV")
     bt.add_argument("--include-early-closes", action="store_true",
