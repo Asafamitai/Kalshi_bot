@@ -74,6 +74,8 @@ class Rung:
     open_interest: Decimal = ZERO
     # When trading stops or the outcome is due, whichever comes first.
     ends_at: float | None = None
+    # Which of Kalshi's exchange shards lists it; money on one shard can't buy on another.
+    exchange_index: int = 0
 
     @classmethod
     def from_market(cls, m: dict) -> Rung | None:
@@ -112,6 +114,7 @@ class Rung:
             ladder_key=ladder_key,
             open_interest=to_decimal(m.get("open_interest_fp")),
             ends_at=min(ends) if ends else None,
+            exchange_index=int(m.get("exchange_index") or 0),
         )
 
     def ask(self, side: str) -> Decimal:
