@@ -157,19 +157,28 @@ def _sell(store: Store, client: KalshiClient, p: dict, bid: Decimal, subaccount:
         done["closed"].append(p["id"])
 
 
+def _on_our_exchange(v: Violation) -> bool:
+    """The subaccount's money is on exchange 0; Kalshi refuses an order for a market listed on another shard."""
+    if v.safer.exchange_index == subaccounts.EXCHANGE:
+        return True
+    log.info("live: %s is on exchange %s, the subaccount's money is on %s: not bought", v.safer.ticker,
+             v.safer.exchange_index, subaccounts.EXCHANGE)
+    return False
+
+
 def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float,
           done: dict) -> None:
     positions = store.live_positions()
     busy = {p["event"] for p in positions if p["status"] == "open"}
     want = [v for v in violations
-            if v.safer.event_ticker not in busy and paper.wanted(paper.STRICT, v, cfg, now)]
+            if v.safer.event_ticker not in busy and paper.wanted(paper.STRICT, v, cfg, now) and _on_our_exchange(v)]
     if not want:
         return
     left = budget_left(positions, cfg.live_budget)
     if left <= ZERO:
         return  # the budget is spent
     picks = [v for v in alerts.reread(client, want, cfg)
-             if paper.wanted(paper.STRICT, v, cfg, now) and calm.settled_history(client, v, cfg, now)]
+             if paper.wanted(paper.STRICT, v, cfg, now) and calm.outcome_steady(client, v, cfg, now)]
     if not picks:
         return
     account = subaccounts.number(store, cfg)

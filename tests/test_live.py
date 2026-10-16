@@ -190,6 +190,16 @@ def test_rejected_order_is_reported_and_trading_stays_on(ladder, tmp_path):
     assert "Kalshi דחתה את ההזמנה" in live_messages(tg)[-1]
 
 
+def test_a_market_on_another_exchange_is_not_bought(ladder, tmp_path):
+    # Kalshi lists some markets on another exchange shard; the subaccount's money can't buy there.
+    for m in ladder:
+        m["exchange_index"] = 2
+    app, client, tg = auto_app(ladder, tmp_path)
+    app.scan_once()
+    assert client.orders == [] and positions(app) == [] and app.store.auto_on
+    assert not any("דחתה" in t for t in live_messages(tg))
+
+
 def test_unknown_outcome_switches_it_off(ladder, mk, tmp_path):
     other = [mk("OTH-T175", 175, "0.02", "0.04", event="KXOTH-26OCT"),
              mk("OTH-T195", 195, "0.14", "0.16", event="KXOTH-26OCT")]
@@ -303,7 +313,7 @@ def test_without_telegram_it_logs(ladder, tmp_path, caplog):
     client = FakeKalshi(ladder)
     store = Store(str(tmp_path / "t.sqlite3"))
     store.set_setting("auto", "on")
-    app = App(Config(), store, client, client, None, clock=Clock())
+    app = App(Config(underlying_min_z=0), store, client, client, None, clock=Clock())
     with caplog.at_level("INFO", logger="kalshi_bot"):
         app.scan_once()
     assert any("LIVE" in r.message for r in caplog.records) and len(store.live_positions()) == 1

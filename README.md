@@ -200,6 +200,35 @@ Hebrew; `/live` there (or `python -m kalshi_bot live`) shows the positions,
 P&L and what is left of the budget, and `/status` there says whether it is
 on, in which account, and what is left.
 
+#### Calm markets only
+
+The strict strategy (automatic trading and its paper twin) buys only where
+the outcome is unlikely to flip before the market resolves:
+
+- at least `CALM_MIN_HOURS_LEFT` (a week) before it resolves, which also
+  leaves out game-day sports and daily crypto;
+- its underlying sits at least `UNDERLYING_MIN_Z` (2) expected moves from
+  the strike, on the side the contract pays on. The underlying is the number
+  the market settles on: Treasury yields (2, 5, 7, 10, 30 years), WTI, Brent
+  and natural gas, gold, silver and copper, the S&P 500 and Nasdaq-100,
+  Bitcoin, Ethereum, Solana, XRP and Dogecoin, GBP, JPY, CAD, NOK, BRL and
+  NZD against the dollar, and the AAA gas average (national and by state).
+  Kalshi records it for every market it settles, and some series settle
+  every hour (`KX10YRRATEH`, `KXBTCD`) or every day (`KXWTI`, `KXGOLDD`,
+  `KXINX`, `KXUSDJPYAD`, `KXAAAGASD`...), so their settled markets are its
+  history, from the market's own data source. A series is matched by the
+  asset's name and a known price suffix, whole (`KXBTCMAXY` yes, `KXBTCDOM`
+  no), and a strike more than four times off the underlying's scale is
+  taken for a different quantity. The expected move is the history's
+  hourly volatility times the square root of the hours left; z is the
+  distance to the strike in those moves. A plain random walk: it knows
+  nothing of news, and a "touch" market (a yearly high or low) crosses about
+  twice as often.
+
+A market with no known underlying (elections, sports, company numbers),
+too little history, or a source that hasn't settled in four days is not
+bought. Each candidate's z is in the log. 0 turns a check off.
+
 To start: connect KALSHI_LADDER_AUTO_BOT (below), set `KALSHI_API_KEY_ID` and
 the private key, choose `LIVE_MAX_TRADE` and `LIVE_BUDGET`, and restart. Then,
 in KALSHI_LADDER_AUTO_BOT, for a subaccount of its own, `/subaccount create`
@@ -353,6 +382,8 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
 | `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
 | `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
+| `CALM_MIN_HOURS_LEFT` | 168 | Strict strategy: hours before the market resolves. |
+| `UNDERLYING_MIN_Z` | 2 | Strict strategy: expected moves between the underlying and the strike; markets with no underlying are not bought. |
 | `KALSHI_LADDER_AUTO_BOT_SUBACCOUNT` | – | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63); unset, the one `/subaccount create` opened, else the primary account. |
 
 ## Tests

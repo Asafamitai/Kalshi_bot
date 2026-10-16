@@ -21,6 +21,7 @@ from .kalshi import KalshiClient, KalshiError
 from .store import Store
 
 NAME = "KALSHI_LADDER_AUTO_BOT"
+EXCHANGE = 0  # the exchange shard the subaccount is created and funded on (see KalshiClient)
 _KEY = f"subaccount:{NAME}"
 
 
