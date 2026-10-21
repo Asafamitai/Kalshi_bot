@@ -180,6 +180,40 @@ def _on_our_exchange(v: Violation) -> bool:
     return False
 
 
+def _fits(client: KalshiClient, v: Violation, cfg: Config, now: float) -> bool:
+    """The contract bought passes the strict filters on its own: all of them but the saving."""
+    r, side = v.safer, v.side
+    return (not r.is_empty(side) and cfg.min_price <= v.ask <= cfg.max_price and v.ask_size >= cfg.min_depth
+            and r.volume_24h >= cfg.min_volume_24h and r.spread(side) <= cfg.paper_strict_max_spread
+            and alerts.enough_time(v, cfg, now) and calm.steady(v, cfg, now) and _on_our_exchange(v)
+            and calm.outcome_steady(client, v, cfg, now))
+
+
+def _upgrade(client: KalshiClient, cfg: Config, v: Violation, now: float) -> Violation:
+    """The safest rung past `v.safer` costing at most LIVE_UPGRADE more that fits, against the same dominated rung.
+
+    Every rung past the safer one in the same direction pays in yet more states, so when one costs
+    about the same, it is the better buy. `v` itself when there is none.
+    """
+    if cfg.live_upgrade <= ZERO:
+        return v
+    try:
+        markets = client.event_markets(v.safer.event_ticker)
+    except (KalshiError, requests.RequestException) as e:
+        log.warning("live: could not read %s's ladder: %s", v.safer.event_ticker, e)
+        return v
+    rungs = [r for r in map(Rung.from_market, markets) if r is not None and r.status == "active"
+             and r.ladder_key == v.safer.ladder_key and r.safety(v.side) > v.safer.safety(v.side)
+             and r.ask(v.side) <= v.ask + cfg.live_upgrade]
+    for r in sorted(rungs, key=lambda r: r.safety(v.side), reverse=True):
+        up = Violation(v.side, r, v.dominated)
+        if _fits(client, up, cfg, now):
+            log.info("live: %s %s upgraded to %s at %s (was %s)", v.side.upper(), v.safer.ticker, r.ticker,
+                     up.ask, v.ask)
+            return up
+    return v
+
+
 def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Violation], now: float,
           done: dict) -> None:
     positions = store.live_positions()
@@ -209,6 +243,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     for v in picks:
         if v.safer.event_ticker in busy or not _trading(store, client):
             continue
+        found, v = v, _upgrade(client, cfg, v, now)
         legs = paper.legs(paper.STRICT, v, min(cfg.live_max_trade, left, cash))
         if not legs:
             continue
@@ -222,6 +257,8 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
         avg = result.get("avg_price") or ask
         cost = order_cost(avg, filled)
         done["opened"].append(store.add_live_position(v, filled, avg, cost, mid, result.get("order_id"), now))
+        if v is not found:
+            done.setdefault("upgraded", {})[done["opened"][-1]] = found.safer.label
         left -= cost
         cash -= cost
         busy.add(v.safer.event_ticker)
@@ -307,7 +344,8 @@ def pass_message(store: Store, cfg: Config, done: dict) -> str | None:
         for i in done["opened"]:
             p = by_id[i]
             lines.append(f'• {p["bought"]} {p["side"].upper()} {_link(p)}'
-                         f" ב-{price(p['price'])} · ${p['cost']:,.2f} · חיסכון {p['saving'] * 100:.1f}¢")
+                         f" ב-{price(p['price'])} · ${p['cost']:,.2f} · חיסכון {p['saving'] * 100:.1f}¢"
+                         + (f" · שודרג מ-{escape(done['upgraded'][i])}" if i in done.get("upgraded", {}) else ""))
     if done["closed"]:
         lines.append("<b>נסגרו</b>")
         for i in done["closed"]:

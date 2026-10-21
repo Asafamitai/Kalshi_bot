@@ -153,6 +153,10 @@ second read of both rungs, at most one position per event), with real orders:
 
 - one immediate-or-cancel limit order at the ask, sized to `LIVE_MAX_TRADE`
   dollars including the fee;
+- with `LIVE_UPGRADE` set, on the safest rung past the contradicting one, in
+  the same direction, whose ask is at most that much above it and that passes
+  the strict filters on its own (all but the saving); it is still measured
+  against the same dominated rung. Without one, the contradicting rung;
 - only with money `LIVE_BUDGET` still has. Buys spend the budget and what
   comes back refills it, but it is never topped up, so `LIVE_BUDGET` is the
   most automatic trading can lose. The Kalshi cash balance must be readable
@@ -382,6 +386,7 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
 | `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
 | `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
+| `LIVE_UPGRADE` | 0 | Automatic trading: buy the safest rung past the contradicting one costing at most this much more (dollars) and passing the strict filters on its own; 0 is off. |
 | `CALM_MIN_HOURS_LEFT` | 168 | Strict strategy: hours before the market resolves. |
 | `UNDERLYING_MIN_Z` | 2 | Strict strategy: expected moves between the underlying and the strike; markets with no underlying are not bought. |
 | `KALSHI_LADDER_AUTO_BOT_SUBACCOUNT` | – | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63); unset, the one `/subaccount create` opened, else the primary account. |

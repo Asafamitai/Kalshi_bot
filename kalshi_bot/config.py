@@ -88,6 +88,10 @@ class Config:
     # may lose in all. Losses come off the budget and are not refilled.
     live_max_trade: Decimal = Decimal("10")
     live_budget: Decimal = Decimal("100")
+    # Up the ladder: instead of the contradicting rung, buy the safest rung past
+    # it in the same direction that costs at most this much more and passes the
+    # strict filters on its own. 0 is off.
+    live_upgrade: Decimal = Decimal(0)
     # The Kalshi subaccount it trades in, if set: 0 is the primary account,
     # 1-63 a numbered subaccount. Unset, it is the one the bot created as
     # KALSHI_LADDER_AUTO_BOT, or else the primary account.
@@ -158,6 +162,7 @@ class Config:
                               if b.strip()),
             live_max_trade=num("LIVE_MAX_TRADE", d.live_max_trade),
             live_budget=num("LIVE_BUDGET", d.live_budget),
+            live_upgrade=num("LIVE_UPGRADE", d.live_upgrade),
             live_subaccount=_subaccount(env.get("KALSHI_LADDER_AUTO_BOT_SUBACCOUNT")),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,

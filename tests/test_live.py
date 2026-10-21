@@ -207,6 +207,24 @@ def test_ai_market_share_series_are_not_bought(ladder, tmp_path, monkeypatch):
     assert client.orders == [] and positions(app) == [] and app.store.auto_on
 
 
+def test_up_the_ladder_buys_the_safest_rung_costing_about_the_same(ladder, mk, tmp_path):
+    # NO on 195 asks 0.86. Past it: 215 asks 0.89 (within 3¢), 225 too but too thin, 235 asks 0.92 (too dear).
+    more = [mk("APP-T205", 205, "0.12", "0.14"), mk("APP-T215", 215, "0.11", "0.12"),
+            mk("APP-T225", 225, "0.11", "0.12", yes_bid_size="5.00"), mk("APP-T235", 235, "0.08", "0.10")]
+    app, client, tg = auto_app(ladder + more, tmp_path, live_upgrade=D("0.03"))
+    app.scan_once()
+    assert [(o[0], o[1], o[3]) for o in buys(client)] == [("APP-T215", "no", D("0.89"))]  # one per event
+    (p,) = positions(app)
+    assert (p["ticker"], p["dominated"]) == ("APP-T215", "APP-T175")
+    assert "שודרג מ-Above 195" in live_messages(tg)[-1]
+
+
+def test_without_a_rung_up_the_ladder_it_buys_the_contradicting_one(ladder, tmp_path):
+    app, client, tg = auto_app(ladder, tmp_path, live_upgrade=D("0.03"))
+    app.scan_once()
+    assert [o[0] for o in buys(client)] == ["APP-T195"] and "שודרג" not in live_messages(tg)[-1]
+
+
 def test_unknown_outcome_switches_it_off(ladder, mk, tmp_path):
     other = [mk("OTH-T175", 175, "0.02", "0.04", event="KXOTH-26OCT"),
              mk("OTH-T195", 195, "0.14", "0.16", event="KXOTH-26OCT")]
