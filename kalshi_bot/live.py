@@ -157,6 +157,20 @@ def _sell(store: Store, client: KalshiClient, p: dict, bid: Decimal, subaccount:
         done["closed"].append(p["id"])
 
 
+# Kalshi's AI model market-share series (tagged "AI" and "Market Share", and the "AI Market Share" one):
+# shares that swing week to week with nothing steady underneath, so automatic trading leaves them alone.
+AI_SHARE_SERIES = frozenset({
+    "KXANTHSHARE", "KXANTHVREQ", "KXANTHVSPEND", "KXBABASHARE", "KXDEEPSHARE", "KXDEEPVREQ", "KXGOOGSHARE",
+    "KXGOOGVREQ", "KXMETASHARE", "KXMISTRALSHARE", "KXMKTSHAREAI", "KXMOONVSPEND", "KXOPENSHARE",
+    "KXOPENSOURCESHARE", "KXOPENSOURCESHAREOR", "KXOPENVREQ", "KXOPENVSPEND", "KXSTEALTHSHARE", "KXTENCENTSHARE",
+    "KXXIAOMISHARE", "KXZAISHARE",
+})
+
+
+def _not_ai_share(v: Violation) -> bool:
+    return v.safer.event_ticker.split("-")[0] not in AI_SHARE_SERIES
+
+
 def _on_our_exchange(v: Violation) -> bool:
     """The subaccount's money is on exchange 0; Kalshi refuses an order for a market listed on another shard."""
     if v.safer.exchange_index == subaccounts.EXCHANGE:
@@ -171,7 +185,8 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     positions = store.live_positions()
     busy = {p["event"] for p in positions if p["status"] == "open"}
     want = [v for v in violations
-            if v.safer.event_ticker not in busy and paper.wanted(paper.STRICT, v, cfg, now) and _on_our_exchange(v)]
+            if v.safer.event_ticker not in busy and _not_ai_share(v) and paper.wanted(paper.STRICT, v, cfg, now)
+            and _on_our_exchange(v)]
     if not want:
         return
     left = budget_left(positions, cfg.live_budget)

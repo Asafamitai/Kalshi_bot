@@ -200,6 +200,13 @@ def test_a_market_on_another_exchange_is_not_bought(ladder, tmp_path):
     assert not any("דחתה" in t for t in live_messages(tg))
 
 
+def test_ai_market_share_series_are_not_bought(ladder, tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "AI_SHARE_SERIES", live.AI_SHARE_SERIES | {"KXAPP"})
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+    assert client.orders == [] and positions(app) == [] and app.store.auto_on
+
+
 def test_unknown_outcome_switches_it_off(ladder, mk, tmp_path):
     other = [mk("OTH-T175", 175, "0.02", "0.04", event="KXOTH-26OCT"),
              mk("OTH-T195", 195, "0.14", "0.16", event="KXOTH-26OCT")]
