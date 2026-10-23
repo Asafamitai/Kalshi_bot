@@ -153,6 +153,10 @@ second read of both rungs, at most one position per event), with real orders:
 
 - one immediate-or-cancel limit order at the ask, sized to `LIVE_MAX_TRADE`
   dollars including the fee;
+- with `LIVE_UPGRADE` set, on the safest rung past the contradicting one, in
+  the same direction, whose ask is at most that much above it and that passes
+  the strict filters on its own (all but the saving); it is still measured
+  against the same dominated rung. Without one, the contradicting rung;
 - only with money `LIVE_BUDGET` still has. Buys spend the budget and what
   comes back refills it, but it is never topped up, so `LIVE_BUDGET` is the
   most automatic trading can lose. The Kalshi cash balance must be readable
@@ -199,6 +203,35 @@ bought, closed or hit a problem, KALSHI_LADDER_AUTO_BOT gets one message in
 Hebrew; `/live` there (or `python -m kalshi_bot live`) shows the positions,
 P&L and what is left of the budget, and `/status` there says whether it is
 on, in which account, and what is left.
+
+#### Calm markets only
+
+The strict strategy (automatic trading and its paper twin) buys only where
+the outcome is unlikely to flip before the market resolves:
+
+- at least `CALM_MIN_HOURS_LEFT` (a week) before it resolves, which also
+  leaves out game-day sports and daily crypto;
+- its underlying sits at least `UNDERLYING_MIN_Z` (2) expected moves from
+  the strike, on the side the contract pays on. The underlying is the number
+  the market settles on: Treasury yields (2, 5, 7, 10, 30 years), WTI, Brent
+  and natural gas, gold, silver and copper, the S&P 500 and Nasdaq-100,
+  Bitcoin, Ethereum, Solana, XRP and Dogecoin, GBP, JPY, CAD, NOK, BRL and
+  NZD against the dollar, and the AAA gas average (national and by state).
+  Kalshi records it for every market it settles, and some series settle
+  every hour (`KX10YRRATEH`, `KXBTCD`) or every day (`KXWTI`, `KXGOLDD`,
+  `KXINX`, `KXUSDJPYAD`, `KXAAAGASD`...), so their settled markets are its
+  history, from the market's own data source. A series is matched by the
+  asset's name and a known price suffix, whole (`KXBTCMAXY` yes, `KXBTCDOM`
+  no), and a strike more than four times off the underlying's scale is
+  taken for a different quantity. The expected move is the history's
+  hourly volatility times the square root of the hours left; z is the
+  distance to the strike in those moves. A plain random walk: it knows
+  nothing of news, and a "touch" market (a yearly high or low) crosses about
+  twice as often.
+
+A market with no known underlying (elections, sports, company numbers),
+too little history, or a source that hasn't settled in four days is not
+bought. Each candidate's z is in the log. 0 turns a check off.
 
 To start: connect KALSHI_LADDER_AUTO_BOT (below), set `KALSHI_API_KEY_ID` and
 the private key, choose `LIVE_MAX_TRADE` and `LIVE_BUDGET`, and restart. Then,
@@ -353,6 +386,9 @@ belongs to another project in the same environment is never picked up.
 | `PAPER_BOOKS` | strict,pair | Books that open new trades: any of `single`, `strict`, `pair`. |
 | `LIVE_MAX_TRADE` | 10 | Automatic trading: dollars per trade, fees included. |
 | `LIVE_BUDGET` | 100 | Automatic trading: the most it may lose in all. |
+| `LIVE_UPGRADE` | 0 | Automatic trading: buy the safest rung past the contradicting one costing at most this much more (dollars) and passing the strict filters on its own; 0 is off. |
+| `CALM_MIN_HOURS_LEFT` | 168 | Strict strategy: hours before the market resolves. |
+| `UNDERLYING_MIN_Z` | 2 | Strict strategy: expected moves between the underlying and the strike; markets with no underlying are not bought. |
 | `KALSHI_LADDER_AUTO_BOT_SUBACCOUNT` | – | Automatic trading: the Kalshi subaccount it trades in (0 is the primary account, 1-63); unset, the one `/subaccount create` opened, else the primary account. |
 
 ## Tests

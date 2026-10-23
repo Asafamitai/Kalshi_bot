@@ -23,7 +23,7 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 # up to 30 seconds (about a minute and a half in all), or as long as its
 # Retry-After says, and pages are read a little apart.
 _ATTEMPTS = 8
-_PAGE_PAUSE = 0.1
+_PAGE_PAUSE = 0.5
 
 
 def _retry_wait(resp, attempt: int) -> float:
@@ -128,13 +128,6 @@ class KalshiClient:
             data = self._request("GET", "/markets", params={"tickers": ",".join(tickers[i : i + 50])})
             out.extend(data.get("markets") or [])
         return out
-
-    def candlesticks(self, ticker: str, start: float, end: float, minutes: int = 60) -> list[dict]:
-        """The market's price history in `minutes` candles; only periods with any activity are listed."""
-        series = ticker.split("-")[0]
-        data = self._request("GET", f"/series/{series}/markets/{ticker}/candlesticks",
-                             params={"start_ts": int(start), "end_ts": int(end), "period_interval": minutes})
-        return data.get("candlesticks") or []
 
     def event_markets(self, event_ticker: str) -> list[dict]:
         """Every market of one event: its whole ladder."""
