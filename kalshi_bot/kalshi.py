@@ -23,7 +23,7 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 # up to 30 seconds (about a minute and a half in all), or as long as its
 # Retry-After says, and pages are read a little apart.
 _ATTEMPTS = 8
-_PAGE_PAUSE = 0.1
+_PAGE_PAUSE = 0.5
 
 
 def _retry_wait(resp, attempt: int) -> float:

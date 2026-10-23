@@ -232,4 +232,4 @@ def test_pages_are_read_a_little_apart(monkeypatch):
                            FakeResponse(200, {"markets": [{"ticker": "B"}], "cursor": ""})])
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
     assert [m["ticker"] for m in client.iter_open_markets()] == ["A", "B"]
-    assert waits == [0.1]
+    assert waits == [0.5]
