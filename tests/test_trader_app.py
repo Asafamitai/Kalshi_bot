@@ -36,6 +36,19 @@ class FakeKalshi:
         source = self.scan_markets if self.scan_markets is not None else self.markets
         return iter(copy.deepcopy(list(source.values())))
 
+    def open_market_pages(self, cursor=None):
+        # One page per market, cursors "1", "2", ...; `page_errors` maps a cursor (None for the first page)
+        # to what reading that page raises, once.
+        source = list((self.scan_markets if self.scan_markets is not None else self.markets).values())
+        start = int(cursor) if cursor else 0
+        self.page_reads = getattr(self, "page_reads", []) + [cursor]
+        for i in range(start, len(source)):
+            here = str(i) if i else None
+            errors = getattr(self, "page_errors", {})
+            if here in errors:
+                raise errors.pop(here)
+            yield [copy.deepcopy(source[i])], (str(i + 1) if i + 1 < len(source) else None)
+
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
 

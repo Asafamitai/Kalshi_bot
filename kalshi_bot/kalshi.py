@@ -110,17 +110,27 @@ class KalshiClient:
 
     def iter_open_markets(self) -> Iterator[dict]:
         """Every open market, excluding multivariate combos, page by page."""
-        cursor = None
+        for page, _ in self.open_market_pages():
+            yield from page
+
+    def open_market_pages(self, cursor: str | None = None) -> Iterator[tuple[list[dict], str | None]]:
+        """The open markets one page at a time, from `cursor` on: (page, the cursor of the next page or None).
+
+        A scan cut short by a rate limit can start again from the last cursor it got.
+        """
+        first = True
         while True:
+            if not first:
+                time.sleep(_PAGE_PAUSE)
+            first = False
             params = {"status": "open", "limit": 1000, "mve_filter": "exclude"}
             if cursor:
                 params["cursor"] = cursor
             data = self._request("GET", "/markets", params=params)
-            yield from data.get("markets") or []
-            cursor = data.get("cursor")
+            cursor = data.get("cursor") or None
+            yield data.get("markets") or [], cursor
             if not cursor:
                 return
-            time.sleep(_PAGE_PAUSE)
 
     def get_markets(self, tickers: list[str]) -> list[dict]:
         out = []

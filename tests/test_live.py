@@ -386,3 +386,84 @@ def test_auto_on_says_when_the_subaccount_balance_cannot_be_read(ladder, tmp_pat
     client.balance = no_such_subaccount
     say(app, "/auto on")
     assert "לא הצלחתי לקרוא את היתרה בתת-חשבון KALSHI_LADDER_AUTO_BOT (3)" in tg.sent[-1][0] and "subaccount not found" in tg.sent[-1][0]
+
+
+# A scan cut short by Kalshi's rate limit
+
+
+def test_a_cut_short_scan_resumes_where_it_stopped(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    assert client.orders == []
+    app.scan_once()
+    assert client.page_reads == [None, "1"]  # the second pass read only the page the first one missed
+    (p,) = positions(app)
+    assert p["ticker"] == "APP-T195"
+
+
+def test_an_old_cut_short_scan_starts_over(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.clock.now += 16 * 60
+    app.scan_once()
+    assert client.page_reads == [None, None]
+
+
+def test_a_bad_cursor_is_not_resumed_from(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(400, "bad cursor")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.scan_once()
+    assert client.page_reads == [None, None]
+
+
+# The position check after a failed scan
+
+
+def test_position_check_takes_profit_when_the_scan_fails(ladder, mk, tmp_path):
+    app, client, tg = auto_app(ladder, tmp_path)
+    app.scan_once()
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")  # NO bid 0.98
+    client.page_errors = {None: KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.check_positions()
+    (sale,) = sells(client)
+    assert sale[1:5] == ("APP-T195", "no", 11, D("0.98"))
+    (p,) = positions(app)
+    assert (p["status"], p["exit_reason"]) == ("closed", "sold")
+    assert "נמכר" in live_messages(tg)[-1]
+
+
+def test_position_check_settles_and_never_buys(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+    orders = len(client.orders)
+    client.markets["APP-T195"].update(status="finalized", result="no")
+    app.check_positions()
+    (p,) = positions(app)
+    assert (p["status"], p["exit_reason"], p["proceeds"]) == ("closed", "settled", D("11"))
+    assert len(client.orders) == orders
+
+
+def test_position_check_reads_nothing_with_nothing_held(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.get_markets = lambda tickers: pytest.fail("read markets with nothing held")
+    app.check_positions()
+
+
+def test_position_check_failure_is_logged_not_raised(ladder, tmp_path, caplog):
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+
+    def limited(tickers):
+        raise KalshiError(429, "too many requests")
+    client.get_markets = limited
+    app.check_positions()
+    assert any("position check failed" in r.message for r in caplog.records)
+    assert positions(app)[0]["status"] == "open"

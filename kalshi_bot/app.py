@@ -11,7 +11,7 @@ from . import alerts, episodes, live, paper, subaccounts, trader, zoom
 from .config import Config
 from .fees import fee_per_contract
 from .format import alert_text, buy_buttons, console_line
-from .kalshi import KalshiClient
+from .kalshi import KalshiClient, KalshiError
 from .ladder import SIDES, Violation, build_ladders, find_violations
 from .store import Store
 from .telegram import Telegram
@@ -50,6 +50,10 @@ AUTO_HELP = (
 
 MOVED = "המסחר האוטומטי עבר לבוט KALSHI_LADDER_AUTO_BOT: /auto, /live, /status ו-/subaccount שם."
 
+# A scan cut short (usually by Kalshi's rate limit) is picked up where it stopped by the next pass, so a
+# block doesn't send every pass back to page one. Pages read longer ago than this are thrown away instead.
+RESUME_MAX_AGE = 15 * 60
+
 
 class App:
     def __init__(
@@ -71,11 +75,59 @@ class App:
         # KALSHI_LADDER_AUTO_BOT, if configured: automatic trading (real money) and paper trading.
         # Without it automatic trading can't be switched on; /paper also works on the alert bot.
         self.paper_telegram = paper_telegram
+        # The pages a cut-short scan read: {"markets": {ticker: market}, "cursor": next page, "started": when}.
+        self._partial: dict | None = None
+
+    def _read_markets(self) -> tuple[list[dict], float]:
+        """Every open market, and when the reading started.
+
+        Picks up from where the last scan stopped if it was cut short less than RESUME_MAX_AGE ago; if
+        this one is cut short too, what it read is kept for the next one.
+        """
+        now = self.clock()
+        partial, self._partial = self._partial, None
+        if partial is not None and now - partial["started"] <= RESUME_MAX_AGE:
+            markets, cursor, started = partial["markets"], partial["cursor"], partial["started"]
+            log.info("resuming the cut-short scan after %d markets", len(markets))
+        else:
+            markets, cursor, started = {}, None, now
+        try:
+            for page, cursor_next in self.scan_client.open_market_pages(cursor):
+                for m in page:
+                    markets[m["ticker"]] = m
+                cursor = cursor_next
+        except Exception as e:
+            # A bad cursor (a 4xx other than a rate limit) can't be resumed from: start over next time.
+            bad_cursor = isinstance(e, KalshiError) and 400 <= e.status < 500 and e.status != 429
+            if cursor and not bad_cursor:
+                self._partial = {"markets": markets, "cursor": cursor, "started": started}
+                log.info("scan cut short after %d markets; the next pass picks up from there", len(markets))
+            raise
+        return list(markets.values()), started
+
+    def check_positions(self) -> None:
+        """After a failed scan: mark, take profit on and settle what automatic trading holds.
+
+        Reads only the held markets (a request or two), so it still gets through while Kalshi is
+        rate-limiting the full scan. Never buys: that needs a full scan.
+        """
+        held = sorted({p["ticker"] for p in self.store.live_positions() if p["status"] == "open"})
+        if not held:
+            return
+        now = self.clock()
+        try:
+            markets = {m["ticker"]: m for m in self.scan_client.get_markets(held) if m.get("status") == "active"}
+            done = live.step(self.store, self.trade_client, self.cfg, [], markets, now)
+        except Exception:
+            log.exception("position check failed")
+            return
+        log.info("position check of %d held markets; live: %d opened, %d closed, %d problems", len(held),
+                 len(done["opened"]), len(done["closed"]), len(done["problems"]))
+        self.send_live(done)
 
     def scan_once(self) -> list[Violation]:
         """One pass: read everything, track episodes, alert on the best new options."""
-        started = self.clock()
-        markets = list(self.scan_client.iter_open_markets())
+        markets, started = self._read_markets()
         by_ticker = {m["ticker"]: m for m in markets}
         ladders = build_ladders(markets)
         found = find_violations(markets, self.cfg.min_saving, self.cfg.max_spread)
@@ -365,6 +417,7 @@ class App:
                 self.scan_once()
             except Exception:
                 log.exception("scan failed")
+                self.check_positions()
             time.sleep(max(0.0, self.cfg.scan_interval - (time.monotonic() - started)))
 
     def _handle_update(self, update: dict) -> None:
