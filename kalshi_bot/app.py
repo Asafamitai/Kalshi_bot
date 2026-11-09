@@ -52,7 +52,7 @@ MOVED = "המסחר האוטומטי עבר לבוט KALSHI_LADDER_AUTO_BOT: /au
 
 # A scan cut short (usually by Kalshi's rate limit) is picked up where it stopped by the next pass, so a
 # block doesn't send every pass back to page one. Pages read longer ago than this are thrown away instead.
-RESUME_MAX_AGE = 15 * 60
+RESUME_MAX_AGE = 45 * 60
 
 
 class App:

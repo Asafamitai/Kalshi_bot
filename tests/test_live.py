@@ -408,7 +408,7 @@ def test_an_old_cut_short_scan_starts_over(ladder, tmp_path):
     client.page_errors = {"1": KalshiError(429, "too many requests")}
     with pytest.raises(KalshiError):
         app.scan_once()
-    app.clock.now += 16 * 60
+    app.clock.now += 46 * 60
     app.scan_once()
     assert client.page_reads == [None, None]
 
@@ -467,3 +467,13 @@ def test_position_check_failure_is_logged_not_raised(ladder, tmp_path, caplog):
     app.check_positions()
     assert any("position check failed" in r.message for r in caplog.records)
     assert positions(app)[0]["status"] == "open"
+
+
+def test_a_cut_short_scan_half_an_hour_old_still_resumes(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.clock.now += 30 * 60
+    app.scan_once()
+    assert client.page_reads == [None, "1"]
