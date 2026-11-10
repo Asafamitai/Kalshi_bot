@@ -477,3 +477,44 @@ def test_a_cut_short_scan_half_an_hour_old_still_resumes(ladder, tmp_path):
     app.clock.now += 30 * 60
     app.scan_once()
     assert client.page_reads == [None, "1"]
+
+
+# A cut-short scan survives a restart
+
+
+def restarted(app, client, tmp_path):
+    """A new App on the same database and client, as after the bot restarts."""
+    again = App(app.cfg, Store(str(tmp_path / "t.sqlite3")), client, client, app.telegram, clock=app.clock,
+                paper_telegram=app.paper_telegram)
+    return again
+
+
+def test_a_cut_short_scan_survives_a_restart(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    assert (tmp_path / "t.sqlite3.partial-scan.jsonl.gz").exists()
+    again = restarted(app, client, tmp_path)
+    again.scan_once()
+    assert client.page_reads == [None, "1"]  # picked up at the page the first run missed
+    (p,) = positions(again)
+    assert p["ticker"] == "APP-T195"
+    assert not (tmp_path / "t.sqlite3.partial-scan.jsonl.gz").exists()  # a finished scan clears it
+
+
+def test_an_old_saved_scan_is_not_resumed_after_a_restart(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.clock.now += 46 * 60
+    restarted(app, client, tmp_path).scan_once()
+    assert client.page_reads == [None, None]
+
+
+def test_an_unreadable_saved_scan_starts_over(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    (tmp_path / "t.sqlite3.partial-scan.jsonl.gz").write_bytes(b"not gzip")
+    app.scan_once()
+    assert client.page_reads == [None] and len(positions(app)) == 1

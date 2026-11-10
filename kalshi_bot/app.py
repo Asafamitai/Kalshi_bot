@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 import logging
+import os
 import threading
 import time
 from html import escape
@@ -52,7 +55,9 @@ MOVED = "המסחר האוטומטי עבר לבוט KALSHI_LADDER_AUTO_BOT: /au
 
 # A scan cut short (usually by Kalshi's rate limit) is picked up where it stopped by the next pass, so a
 # block doesn't send every pass back to page one. Pages read longer ago than this are thrown away instead.
+# What was read is also written next to the database, so a restart picks it up too.
 RESUME_MAX_AGE = 45 * 60
+PARTIAL_SUFFIX = ".partial-scan.jsonl.gz"
 
 
 class App:
@@ -77,6 +82,50 @@ class App:
         self.paper_telegram = paper_telegram
         # The pages a cut-short scan read: {"markets": {ticker: market}, "cursor": next page, "started": when}.
         self._partial: dict | None = None
+        path = getattr(store, "path", None)
+        self._partial_path = path + PARTIAL_SUFFIX if path and path != ":memory:" else None
+        # Read once at the first scan: a cut-short scan saved by the run before a restart.
+        self._partial_loaded = False
+
+    def _save_partial(self) -> None:
+        """Write the cut-short scan next to the database: a header line, then one market a line."""
+        if self._partial_path is None or self._partial is None:
+            return
+        tmp = self._partial_path + ".tmp"
+        try:
+            with gzip.open(tmp, "wt", compresslevel=1) as f:
+                f.write(json.dumps({"cursor": self._partial["cursor"], "started": self._partial["started"]}) + "\n")
+                for m in self._partial["markets"].values():
+                    f.write(json.dumps(m) + "\n")
+            os.replace(tmp, self._partial_path)
+        except Exception:
+            log.exception("could not save the cut-short scan")
+
+    def _load_partial(self) -> dict | None:
+        """The cut-short scan saved before a restart, if it is recent enough to resume."""
+        if self._partial_path is None or not os.path.exists(self._partial_path):
+            return None
+        try:
+            with gzip.open(self._partial_path, "rt") as f:
+                head = json.loads(f.readline())
+                if self.clock() - head["started"] > RESUME_MAX_AGE:
+                    return None
+                markets = {}
+                for line in f:
+                    m = json.loads(line)
+                    markets[m["ticker"]] = m
+        except Exception:
+            log.exception("could not read the saved cut-short scan; starting over")
+            return None
+        log.info("found a cut-short scan saved before the restart (%d markets)", len(markets))
+        return {"markets": markets, "cursor": head["cursor"], "started": head["started"]}
+
+    def _drop_partial(self) -> None:
+        if self._partial_path is not None:
+            try:
+                os.remove(self._partial_path)
+            except FileNotFoundError:
+                pass
 
     def _read_markets(self) -> tuple[list[dict], float]:
         """Every open market, and when the reading started.
@@ -85,6 +134,10 @@ class App:
         this one is cut short too, what it read is kept for the next one.
         """
         now = self.clock()
+        if not self._partial_loaded:
+            self._partial_loaded = True
+            if self._partial is None:
+                self._partial = self._load_partial()
         partial, self._partial = self._partial, None
         if partial is not None and now - partial["started"] <= RESUME_MAX_AGE:
             markets, cursor, started = partial["markets"], partial["cursor"], partial["started"]
@@ -102,7 +155,11 @@ class App:
             if cursor and not bad_cursor:
                 self._partial = {"markets": markets, "cursor": cursor, "started": started}
                 log.info("scan cut short after %d markets; the next pass picks up from there", len(markets))
+                self._save_partial()
+            else:
+                self._drop_partial()
             raise
+        self._drop_partial()
         return list(markets.values()), started
 
     def check_positions(self) -> None:
