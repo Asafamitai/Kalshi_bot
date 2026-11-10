@@ -193,7 +193,7 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
         left = cash(trades, s, cfg.paper_bankroll)
         asked = {_key(v) for v in want[s]}
         picks = [v for v in fresh if _key(v) in asked and wanted(s, v, cfg, now)
-                 and (s != STRICT or calm.settled_history(client, v, cfg, now))]
+                 and (s != STRICT or calm.outcome_steady(client, v, cfg, now))]
         picks.sort(key=lambda v: pair(v)["worst"] if s == PAIR else v.net_saving, reverse=True)
         for v in picks:
             if v.safer.event_ticker in busy[s]:

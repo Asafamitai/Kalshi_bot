@@ -69,7 +69,7 @@ def test_single_stops_opening_by_default_and_sees_out_what_it_holds(ladder, mk, 
     app, client, _ = make_app(ladder, tmp_path)
     app.scan_once()
     assert len(book(app, "single")) == 1
-    app.cfg = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}))
+    app.cfg = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}), underlying_min_z=0)
     assert app.cfg.paper_books == ("strict", "pair")
     resolve(client, APP_T175="no", APP_T195="no")
     app.scan_once()
@@ -364,7 +364,7 @@ def make_paper_app(markets, tmp_path, **cfg):
     cfg.setdefault("paper_books", paper.STRATEGIES)
     config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}),
                     paper_telegram_token="tok", paper_telegram_chat_id="77",
-                    paper_telegram_allowed_user_ids=frozenset({"77"}), **cfg)
+                    paper_telegram_allowed_user_ids=frozenset({"77"}), **{"underlying_min_z": 0, **cfg})
     client = FakeKalshi(markets)
     tg, paper_tg = FakeTelegram(), FakeTelegram()
     app = App(config, Store(str(tmp_path / "t.sqlite3")), client, client, tg, clock=Clock(), paper_telegram=paper_tg)

@@ -72,11 +72,10 @@ class Rung:
     volume_24h: Decimal
     ladder_key: tuple
     open_interest: Decimal = ZERO
-    # The YES book 24 hours ago, for how far the price has moved since.
-    prev_yes_bid: Decimal = ZERO
-    prev_yes_ask: Decimal = ZERO
     # When trading stops or the outcome is due, whichever comes first.
     ends_at: float | None = None
+    # Which of Kalshi's exchange shards lists it; money on one shard can't buy on another.
+    exchange_index: int = 0
 
     @classmethod
     def from_market(cls, m: dict) -> Rung | None:
@@ -114,9 +113,8 @@ class Rung:
             volume_24h=to_decimal(m.get("volume_24h_fp")),
             ladder_key=ladder_key,
             open_interest=to_decimal(m.get("open_interest_fp")),
-            prev_yes_bid=to_decimal(m.get("previous_yes_bid_dollars")),
-            prev_yes_ask=to_decimal(m.get("previous_yes_ask_dollars")),
             ends_at=min(ends) if ends else None,
+            exchange_index=int(m.get("exchange_index") or 0),
         )
 
     def ask(self, side: str) -> Decimal:
@@ -124,15 +122,6 @@ class Rung:
 
     def bid(self, side: str) -> Decimal:
         return self.yes_bid if side == "yes" else self.no_bid
-
-    def move_24h(self) -> Decimal | None:
-        """How far the YES mid moved in 24 hours; None unless the book was two-sided then and is now.
-
-        Either side moves by the same amount: a NO mid is 1 less the YES mid.
-        """
-        if not (ZERO < self.prev_yes_bid < self.prev_yes_ask < ONE) or self.is_empty("yes"):
-            return None
-        return abs(self.mid("yes") - (self.prev_yes_bid + self.prev_yes_ask) / 2)
 
     def hours_left(self, now: float) -> float | None:
         return None if self.ends_at is None else (self.ends_at - now) / 3600

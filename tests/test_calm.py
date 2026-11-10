@@ -1,113 +1,190 @@
+import math
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 import requests
-from test_live import auto_app, buys, positions
+from test_live import auto_app, buys
 
-from kalshi_bot import calm
+from kalshi_bot import underlying
 from kalshi_bot.config import Config
-from kalshi_bot.kalshi import KalshiError
+from kalshi_bot.ladder import Rung
+from kalshi_bot.zoom import Past
 
 D = Decimal
+NOW = 1_800_000_000.0  # the tests' clock
+DAY = 86400
 
 
-def ladder(mk, **rung195):
-    # Strict buys NO on "above 195" at 0.86 against NO "above 175" at 0.96/0.98.
-    return [mk("APP-T175", 175, "0.02", "0.04"), mk("APP-T195", 195, "0.14", "0.16", **rung195)]
+def iso(t):
+    return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def wti_ladder(mk, days_left=10):
+    # A WTI weekly ladder: strict buys NO on "above 195" at 0.86 (it pays if WTI ends at or below 195).
+    end = iso(NOW + days_left * DAY)
+    return [mk("KXWTIW-26OCT31-T175", 175, "0.02", "0.04", event="KXWTIW-26OCT31", close_time=end),
+            mk("KXWTIW-26OCT31-T195", 195, "0.14", "0.16", event="KXWTIW-26OCT31", close_time=end)]
+
+
+def settled(latest, days=20, swing=1, last_at=NOW - 3600):
+    """KXWTI's daily settlements, one a day, the last at `last_at`: latest, latest + swing, latest, ..., latest."""
+    out = []
+    for i in range(days):
+        back = days - 1 - i  # days before the last
+        t = last_at - back * DAY
+        value = latest + (swing if back % 2 else 0)
+        out.append({"event_ticker": f"KXWTI-{i}", "ticker": f"KXWTI-{i}-T1", "close_time": iso(t),
+                    "expiration_value": str(value)})
+    return out
+
+
+def calm_app(mk, tmp_path, history, **cfg):
+    cfg.setdefault("underlying_min_z", 2)
+    app, client, tg = auto_app(wti_ladder(mk), tmp_path, **cfg)
+    client.settled = history
+    return app, client, tg
 
 
 def strict(app):
     return [t for t in app.store.paper_trades() if t["strategy"] == "strict"]
 
 
-def single(app):
-    return [t for t in app.store.paper_trades() if t["strategy"] == "single"]
+# Which series measures what
 
 
-def test_a_calm_market_is_bought(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk, prev_yes_bid="0.12", prev_yes_ask="0.14"), tmp_path)  # moved 2c
+@pytest.mark.parametrize("series, source", [
+    ("KXUST10AM", "KX10YRRATEH"), ("KXNOTE10W", "KX10YRRATEH"), ("KXTNOTED", "KX10YRRATEH"),
+    ("KXNOTE30", "KX30YRRATEH"), ("KX2YRRATEH", "KX2YRRATEH"),
+    ("KXWTIMIN", "KXWTI"), ("KXWTIW", "KXWTI"), ("WTIMAX", "KXWTI"), ("KXBRENTW", "KXBRENTD"),
+    ("KXAAAGASMAXM", "KXAAAGASD"), ("KXAAAGASMINM", "KXAAAGASD"), ("KXAAAGASW", "KXAAAGASD"),
+    ("KXAAAGASMAXCA", "KXAAAGASDCA"), ("KXAAAGASDTX", "KXAAAGASDTX"), ("KXAAAGASWNJ", "KXAAAGASDNJ"),
+    ("KXBTCMAXY", "KXBTCD"), ("KXETHMINMON", "KXETHD"), ("KXSOLD26", "KXSOLD"), ("KXRIPPLEMAXY", "KXXRPD"),
+    ("KXXRPMAXY", "KXXRPD"), ("KXDOGEMAXW", "KXDOGED"), ("KXINXY", "KXINX"), ("KXNDQDIRY", "KXNASDAQ100"),
+    ("KXGOLDDIRY", "KXGOLDD"), ("KXSILVERMON", "KXSILVERD"), ("KXNGASMAX", "KXNATGASD"), ("KXBRENTW", "KXBRENTD"),
+    ("KXUSDNOKAW", "KXUSDNOKAD"), ("KXUSDCADAW", "KXUSDCADAD"), ("USDJPYMAX", "KXUSDJPYAD"),
+])
+def test_series_find_their_source(series, source):
+    assert underlying.source_for(series).series == source
+
+
+@pytest.mark.parametrize("series", [
+    "KXOPENVREQ", "KXVOTEGENERAL", "KXNCAAF1HSPREAD", "KXAMZNCC", "KXAPP",
+    # A known asset name followed by something that isn't a price: dominance, holdings, the DOGE agency...
+    "KXBTCDOM", "KXBTCVSETH", "KXSOLAR", "KXSOLICITORGENERAL", "KXSOLDATHOLDINGS", "KXGOLDCARD",
+    "KXGOLDENBACHELOR", "KXDOGESAVINGS", "KXWTIVSBRENT", "KXSILVERSTATES", "KXCOPPEROPEN", "KXETHFLIP",
+])
+def test_series_without_a_source(series):
+    assert underlying.source_for(series) is None
+
+
+def test_hourly_move_scales_each_change_by_its_gap():
+    # A 2-unit move over 4 hours is 1 unit/sqrt(hour); so is a 1-unit move over 1 hour.
+    past = [Past(f"e{i}", t * 3600.0, D(v)) for i, (t, v) in enumerate([(0, 0), (4, 2), (5, 1), (9, 3), (10, 2),
+                                                                      (14, 4), (15, 3), (19, 5)])]
+    assert underlying.hourly_move(past) == pytest.approx(1.0)
+    assert underlying.hourly_move(past[:5]) is None  # too few values
+
+
+def test_outlook_numbers(mk):
+    rung = Rung.from_market(wti_ladder(mk)[1])  # above 195, 10 days left
+    from test_trader_app import FakeKalshi
+    client = FakeKalshi([])
+    client.settled = settled(185)
+    o = underlying.outlook(client, rung, "no", NOW)
+    hourly = math.sqrt(1 / 24)  # +-1 a day
+    assert (o.source, o.latest, o.status_quo) == ("KXWTI", D("185"), True)
+    assert o.hourly == pytest.approx(hourly, rel=0.05)
+    assert o.z == pytest.approx(10 / (hourly * math.sqrt(240)), rel=0.05)  # ~3.2
+
+
+def test_a_strike_on_another_scale_is_not_that_underlying(mk):
+    # A WTI series whose strikes are percentages: 4.5 against WTI at 185 is not the same quantity.
+    m = mk("KXWTIW-26OCT31-T4", 4.5, "0.14", "0.16", event="KXWTIW-26OCT31", close_time=iso(NOW + 10 * DAY))
+    from test_trader_app import FakeKalshi
+    client = FakeKalshi([])
+    client.settled = settled(185)
+    assert underlying.outlook(client, Rung.from_market(m), "no", NOW) is None
+
+
+# The check in the strategy
+
+
+def test_far_from_the_strike_is_bought(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(185))  # z ~3.2
     app.scan_once()
     assert len(buys(client)) == 1 and len(strict(app)) == 1
 
 
-def test_a_big_day_on_the_contract_bought_is_skipped(mk, tmp_path):
-    # YES 195 was 0.04/0.06 a day ago and is 0.14/0.16 now: a 10c move.
-    app, client, _ = auto_app(ladder(mk, prev_yes_bid="0.04", prev_yes_ask="0.06"), tmp_path)
-    app.scan_once()
-    assert buys(client) == [] and strict(app) == [] and len(single(app)) == 1  # only strict is calm-only
-
-
-def test_a_big_day_on_the_reference_rung_is_skipped(mk, tmp_path):
-    markets = [mk("APP-T175", 175, "0.02", "0.04", prev_yes_bid="0.10", prev_yes_ask="0.12"),
-               mk("APP-T195", 195, "0.14", "0.16")]
-    app, client, _ = auto_app(markets, tmp_path)
+def test_too_close_to_the_strike_is_skipped(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(190))  # z ~1.6
     app.scan_once()
     assert buys(client) == [] and strict(app) == []
 
 
-def test_no_book_a_day_ago_is_not_calm(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk, prev_yes_bid="0", prev_yes_ask="0"), tmp_path)
+def test_paying_only_if_it_moves_is_skipped(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(205))  # WTI above 195: NO pays only if it falls back
     app.scan_once()
     assert buys(client) == [] and strict(app) == []
 
 
-def test_a_wide_week_is_skipped(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk), tmp_path)
-    client.history = {"APP-T195": [("0.02", "0.04"), ("0.14", "0.16")]}  # mid 0.03 then 0.15: 12c
-    app.scan_once()
-    assert buys(client) == [] and strict(app) == [] and len(single(app)) == 1
-
-
-def test_the_mid_now_counts_toward_the_range(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk), tmp_path)
-    client.history = {"APP-T195": [("0.03", "0.05")]}  # history alone is flat at 0.04; now 0.15
-    app.scan_once()
-    assert buys(client) == []
-
-
-def test_an_unreadable_history_buys_nothing_and_is_asked_again(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk), tmp_path)
-
-    def broken(*a, **k):
-        raise requests.ConnectionError("timed out")
-    client.candlesticks = broken
-    app.scan_once()
-    assert buys(client) == [] and strict(app) == []
-    del client.candlesticks  # back to the class's method
+def test_a_lower_bar_buys_closer(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(190), underlying_min_z=1.5)
     app.scan_once()
     assert len(buys(client)) == 1
 
 
-def test_one_history_read_serves_the_real_trade_and_its_paper_twin(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk), tmp_path)
+def test_no_underlying_no_buy(mk, tmp_path):
+    ladder = [mk("APP-T175", 175, "0.02", "0.04"), mk("APP-T195", 195, "0.14", "0.16")]
+    app, client, _ = auto_app(ladder, tmp_path, underlying_min_z=2)  # KXAPP: nothing measures it
     app.scan_once()
-    assert len(buys(client)) == 1 and len(strict(app)) == 1 and client.history_reads == 1
+    assert buys(client) == [] and strict(app) == []
+    assert len([t for t in app.store.paper_trades() if t["strategy"] == "single"]) == 1  # only strict is calm-only
 
 
-def test_zero_turns_each_check_off(mk, tmp_path):
-    app, client, _ = auto_app(ladder(mk, prev_yes_bid="0.04", prev_yes_ask="0.06"), tmp_path,
-                              calm_max_move_24h=D("0"), calm_max_range=D("0"))
-    client.history = {"APP-T195": [("0.02", "0.04")]}
+def test_a_stale_source_is_not_trusted(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(185, last_at=NOW - 5 * DAY))
     app.scan_once()
-    assert len(buys(client)) == 1 and client.__dict__.get("history_reads", 0) == 0
+    assert buys(client) == []
 
 
-def test_history_is_asked_for_hourly_over_the_configured_days(mk, tmp_path):
-    seen = []
+def test_too_little_history_is_not_trusted(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(185, days=5))
+    app.scan_once()
+    assert buys(client) == []
 
-    class Client:
-        def candlesticks(self, ticker, start, end, minutes=60):
-            seen.append((ticker, end - start, minutes))
-            return []
-    assert calm.history_bounds(Client(), "APP-T195", Config(calm_history_days=2), 1_800_000_000.0) is None
-    assert seen == [("APP-T195", 2 * 86400, 60)]
+
+def test_an_unreadable_source_buys_nothing_and_is_asked_again(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(185))
+
+    def broken(*a, **k):
+        raise requests.ConnectionError("timed out")
+    client.settled_markets = broken
+    app.scan_once()
+    assert buys(client) == []
+    del client.settled_markets  # back to the class's method
+    app.scan_once()
+    assert len(buys(client)) == 1
+
+
+def test_one_read_serves_the_real_trade_and_its_paper_twin(mk, tmp_path):
+    app, client, _ = calm_app(mk, tmp_path, settled(185))
+    reads = []
+    real = client.settled_markets
+    client.settled_markets = lambda *a, **k: reads.append(a[0]) or real(*a, **k)
+    app.scan_once()
+    assert len(buys(client)) == 1 and len(strict(app)) == 1 and reads.count("KXWTI") == 1
+
+
+def test_a_week_left_is_still_required(mk, tmp_path):
+    app, client, _ = auto_app(wti_ladder(mk, days_left=5), tmp_path, underlying_min_z=2)
+    client.settled = settled(185)
+    app.scan_once()
+    assert buys(client) == []
 
 
 def test_calm_config():
     d = Config.from_env({})
-    assert (d.calm_max_move_24h, d.calm_max_range, d.calm_history_days, d.calm_min_hours_left) == \
-        (D("0.05"), D("0.10"), 3, 168)
-    cfg = Config.from_env({"CALM_MAX_MOVE_24H": "0.03", "CALM_MAX_RANGE": "0.08", "CALM_HISTORY_DAYS": "5",
-                           "CALM_MIN_HOURS_LEFT": "72"})
-    assert (cfg.calm_max_move_24h, cfg.calm_max_range, cfg.calm_history_days, cfg.calm_min_hours_left) == \
-        (D("0.03"), D("0.08"), 5, 72)
+    assert (d.calm_min_hours_left, d.underlying_min_z) == (168, 2.0)
+    cfg = Config.from_env({"CALM_MIN_HOURS_LEFT": "72", "UNDERLYING_MIN_Z": "1.5"})
+    assert (cfg.calm_min_hours_left, cfg.underlying_min_z) == (72, 1.5)

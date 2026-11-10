@@ -36,6 +36,19 @@ class FakeKalshi:
         source = self.scan_markets if self.scan_markets is not None else self.markets
         return iter(copy.deepcopy(list(source.values())))
 
+    def open_market_pages(self, cursor=None):
+        # One page per market, cursors "1", "2", ...; `page_errors` maps a cursor (None for the first page)
+        # to what reading that page raises, once.
+        source = list((self.scan_markets if self.scan_markets is not None else self.markets).values())
+        start = int(cursor) if cursor else 0
+        self.page_reads = getattr(self, "page_reads", []) + [cursor]
+        for i in range(start, len(source)):
+            here = str(i) if i else None
+            errors = getattr(self, "page_errors", {})
+            if here in errors:
+                raise errors.pop(here)
+            yield [copy.deepcopy(source[i])], (str(i + 1) if i + 1 < len(source) else None)
+
     def get_markets(self, tickers):
         return [copy.deepcopy(self.markets[t]) for t in tickers if t in self.markets]
 
@@ -76,15 +89,6 @@ class FakeKalshi:
         self.transfers = getattr(self, "transfers", []) + [(from_subaccount, to_subaccount, dollars)]
         return {}
 
-    def candlesticks(self, ticker, start, end, minutes=60):
-        """One candle at today's book unless a test set a history; a history is (yes bid, yes ask) pairs."""
-        self.history_reads = getattr(self, "history_reads", 0) + 1
-        pairs = getattr(self, "history", {}).get(ticker)
-        if pairs is None:
-            m = self.markets.get(ticker, {})
-            pairs = [(m.get("yes_bid_dollars", "0"), m.get("yes_ask_dollars", "0"))]
-        return [{"yes_bid": {"close_dollars": str(b)}, "yes_ask": {"close_dollars": str(a)}} for b, a in pairs]
-
     def position(self, ticker, side, subaccount=0):
         self.subaccounts.append(("position", subaccount))
         return self.held.get((ticker, side), D(0))
@@ -121,6 +125,8 @@ def ladder(mk):
 
 def make_app(markets, tmp_path, can_trade=True, **cfg):
     cfg.setdefault("paper_books", ("single", "strict", "pair"))  # every book opens, to test each
+    # The fixture ladder has no underlying source; tests of that check (test_calm.py) set it.
+    cfg.setdefault("underlying_min_z", 0)
     config = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}), **cfg)
     client = FakeKalshi(markets, can_trade=can_trade)
     tg = FakeTelegram()

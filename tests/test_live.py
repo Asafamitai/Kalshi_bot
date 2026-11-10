@@ -190,6 +190,41 @@ def test_rejected_order_is_reported_and_trading_stays_on(ladder, tmp_path):
     assert "Kalshi דחתה את ההזמנה" in live_messages(tg)[-1]
 
 
+def test_a_market_on_another_exchange_is_not_bought(ladder, tmp_path):
+    # Kalshi lists some markets on another exchange shard; the subaccount's money can't buy there.
+    for m in ladder:
+        m["exchange_index"] = 2
+    app, client, tg = auto_app(ladder, tmp_path)
+    app.scan_once()
+    assert client.orders == [] and positions(app) == [] and app.store.auto_on
+    assert not any("דחתה" in t for t in live_messages(tg))
+
+
+def test_ai_market_share_series_are_not_bought(ladder, tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "AI_SHARE_SERIES", live.AI_SHARE_SERIES | {"KXAPP"})
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+    assert client.orders == [] and positions(app) == [] and app.store.auto_on
+
+
+def test_up_the_ladder_buys_the_safest_rung_costing_about_the_same(ladder, mk, tmp_path):
+    # NO on 195 asks 0.86. Past it: 215 asks 0.89 (within 3¢), 225 too but too thin, 235 asks 0.92 (too dear).
+    more = [mk("APP-T205", 205, "0.12", "0.14"), mk("APP-T215", 215, "0.11", "0.12"),
+            mk("APP-T225", 225, "0.11", "0.12", yes_bid_size="5.00"), mk("APP-T235", 235, "0.08", "0.10")]
+    app, client, tg = auto_app(ladder + more, tmp_path, live_upgrade=D("0.03"))
+    app.scan_once()
+    assert [(o[0], o[1], o[3]) for o in buys(client)] == [("APP-T215", "no", D("0.89"))]  # one per event
+    (p,) = positions(app)
+    assert (p["ticker"], p["dominated"]) == ("APP-T215", "APP-T175")
+    assert "שודרג מ-Above 195" in live_messages(tg)[-1]
+
+
+def test_without_a_rung_up_the_ladder_it_buys_the_contradicting_one(ladder, tmp_path):
+    app, client, tg = auto_app(ladder, tmp_path, live_upgrade=D("0.03"))
+    app.scan_once()
+    assert [o[0] for o in buys(client)] == ["APP-T195"] and "שודרג" not in live_messages(tg)[-1]
+
+
 def test_unknown_outcome_switches_it_off(ladder, mk, tmp_path):
     other = [mk("OTH-T175", 175, "0.02", "0.04", event="KXOTH-26OCT"),
              mk("OTH-T195", 195, "0.14", "0.16", event="KXOTH-26OCT")]
@@ -303,7 +338,7 @@ def test_without_telegram_it_logs(ladder, tmp_path, caplog):
     client = FakeKalshi(ladder)
     store = Store(str(tmp_path / "t.sqlite3"))
     store.set_setting("auto", "on")
-    app = App(Config(), store, client, client, None, clock=Clock())
+    app = App(Config(underlying_min_z=0), store, client, client, None, clock=Clock())
     with caplog.at_level("INFO", logger="kalshi_bot"):
         app.scan_once()
     assert any("LIVE" in r.message for r in caplog.records) and len(store.live_positions()) == 1
@@ -351,3 +386,94 @@ def test_auto_on_says_when_the_subaccount_balance_cannot_be_read(ladder, tmp_pat
     client.balance = no_such_subaccount
     say(app, "/auto on")
     assert "לא הצלחתי לקרוא את היתרה בתת-חשבון KALSHI_LADDER_AUTO_BOT (3)" in tg.sent[-1][0] and "subaccount not found" in tg.sent[-1][0]
+
+
+# A scan cut short by Kalshi's rate limit
+
+
+def test_a_cut_short_scan_resumes_where_it_stopped(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    assert client.orders == []
+    app.scan_once()
+    assert client.page_reads == [None, "1"]  # the second pass read only the page the first one missed
+    (p,) = positions(app)
+    assert p["ticker"] == "APP-T195"
+
+
+def test_an_old_cut_short_scan_starts_over(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.clock.now += 46 * 60
+    app.scan_once()
+    assert client.page_reads == [None, None]
+
+
+def test_a_bad_cursor_is_not_resumed_from(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(400, "bad cursor")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.scan_once()
+    assert client.page_reads == [None, None]
+
+
+# The position check after a failed scan
+
+
+def test_position_check_takes_profit_when_the_scan_fails(ladder, mk, tmp_path):
+    app, client, tg = auto_app(ladder, tmp_path)
+    app.scan_once()
+    client.markets["APP-T195"] = mk("APP-T195", 195, "0.01", "0.02")  # NO bid 0.98
+    client.page_errors = {None: KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.check_positions()
+    (sale,) = sells(client)
+    assert sale[1:5] == ("APP-T195", "no", 11, D("0.98"))
+    (p,) = positions(app)
+    assert (p["status"], p["exit_reason"]) == ("closed", "sold")
+    assert "נמכר" in live_messages(tg)[-1]
+
+
+def test_position_check_settles_and_never_buys(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+    orders = len(client.orders)
+    client.markets["APP-T195"].update(status="finalized", result="no")
+    app.check_positions()
+    (p,) = positions(app)
+    assert (p["status"], p["exit_reason"], p["proceeds"]) == ("closed", "settled", D("11"))
+    assert len(client.orders) == orders
+
+
+def test_position_check_reads_nothing_with_nothing_held(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.get_markets = lambda tickers: pytest.fail("read markets with nothing held")
+    app.check_positions()
+
+
+def test_position_check_failure_is_logged_not_raised(ladder, tmp_path, caplog):
+    app, client, _ = auto_app(ladder, tmp_path)
+    app.scan_once()
+
+    def limited(tickers):
+        raise KalshiError(429, "too many requests")
+    client.get_markets = limited
+    app.check_positions()
+    assert any("position check failed" in r.message for r in caplog.records)
+    assert positions(app)[0]["status"] == "open"
+
+
+def test_a_cut_short_scan_half_an_hour_old_still_resumes(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path)
+    client.page_errors = {"1": KalshiError(429, "too many requests")}
+    with pytest.raises(KalshiError):
+        app.scan_once()
+    app.clock.now += 30 * 60
+    app.scan_once()
+    assert client.page_reads == [None, "1"]

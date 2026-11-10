@@ -232,13 +232,13 @@ def test_pages_are_read_a_little_apart(monkeypatch):
                            FakeResponse(200, {"markets": [{"ticker": "B"}], "cursor": ""})])
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
     assert [m["ticker"] for m in client.iter_open_markets()] == ["A", "B"]
-    assert waits == [0.1]
+    assert waits == [0.5]
 
 
-def test_candlesticks_go_to_the_series_path():
-    session = FakeSession([FakeResponse(200, {"candlesticks": [{"end_period_ts": 1}], "ticker": "KXW-26-T63"})])
+def test_open_market_pages_starts_from_a_cursor_and_hands_back_the_next():
+    session = FakeSession([FakeResponse(200, {"markets": [{"ticker": "C"}], "cursor": "c2"}),
+                           FakeResponse(200, {"markets": [{"ticker": "D"}], "cursor": ""})])
     client = KalshiClient("https://example.test/trade-api/v2", session=session)
-    assert client.candlesticks("KXW-26-T63", 100.5, 200.9) == [{"end_period_ts": 1}]
-    call = session.calls[0]
-    assert call["url"].endswith("/series/KXW/markets/KXW-26-T63/candlesticks")
-    assert call["params"] == {"start_ts": 100, "end_ts": 200, "period_interval": 60}
+    pages = [([m["ticker"] for m in page], nxt) for page, nxt in client.open_market_pages("c1")]
+    assert pages == [(["C"], "c2"), (["D"], None)]
+    assert session.calls[0]["params"]["cursor"] == "c1"

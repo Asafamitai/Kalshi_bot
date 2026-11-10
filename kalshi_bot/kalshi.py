@@ -23,7 +23,7 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 # up to 30 seconds (about a minute and a half in all), or as long as its
 # Retry-After says, and pages are read a little apart.
 _ATTEMPTS = 8
-_PAGE_PAUSE = 0.1
+_PAGE_PAUSE = 0.5
 
 
 def _retry_wait(resp, attempt: int) -> float:
@@ -110,17 +110,27 @@ class KalshiClient:
 
     def iter_open_markets(self) -> Iterator[dict]:
         """Every open market, excluding multivariate combos, page by page."""
-        cursor = None
+        for page, _ in self.open_market_pages():
+            yield from page
+
+    def open_market_pages(self, cursor: str | None = None) -> Iterator[tuple[list[dict], str | None]]:
+        """The open markets one page at a time, from `cursor` on: (page, the cursor of the next page or None).
+
+        A scan cut short by a rate limit can start again from the last cursor it got.
+        """
+        first = True
         while True:
+            if not first:
+                time.sleep(_PAGE_PAUSE)
+            first = False
             params = {"status": "open", "limit": 1000, "mve_filter": "exclude"}
             if cursor:
                 params["cursor"] = cursor
             data = self._request("GET", "/markets", params=params)
-            yield from data.get("markets") or []
-            cursor = data.get("cursor")
+            cursor = data.get("cursor") or None
+            yield data.get("markets") or [], cursor
             if not cursor:
                 return
-            time.sleep(_PAGE_PAUSE)
 
     def get_markets(self, tickers: list[str]) -> list[dict]:
         out = []
@@ -128,13 +138,6 @@ class KalshiClient:
             data = self._request("GET", "/markets", params={"tickers": ",".join(tickers[i : i + 50])})
             out.extend(data.get("markets") or [])
         return out
-
-    def candlesticks(self, ticker: str, start: float, end: float, minutes: int = 60) -> list[dict]:
-        """The market's price history in `minutes` candles; only periods with any activity are listed."""
-        series = ticker.split("-")[0]
-        data = self._request("GET", f"/series/{series}/markets/{ticker}/candlesticks",
-                             params={"start_ts": int(start), "end_ts": int(end), "period_interval": minutes})
-        return data.get("candlesticks") or []
 
     def event_markets(self, event_ticker: str) -> list[dict]:
         """Every market of one event: its whole ladder."""
