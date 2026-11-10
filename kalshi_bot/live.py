@@ -185,7 +185,8 @@ def _fits(client: KalshiClient, v: Violation, cfg: Config, now: float) -> bool:
     r, side = v.safer, v.side
     return (not r.is_empty(side) and cfg.min_price <= v.ask <= cfg.max_price and v.ask_size >= cfg.min_depth
             and r.volume_24h >= cfg.min_volume_24h and r.spread(side) <= cfg.paper_strict_max_spread
-            and alerts.enough_time(v, cfg, now) and calm.steady(v, cfg, now) and _on_our_exchange(v)
+            and alerts.enough_time(v, cfg, now) and calm.steady(v, cfg, now) and paper.yes_priced(v, cfg)
+            and _on_our_exchange(v)
             and calm.outcome_steady(client, v, cfg, now))
 
 

@@ -1,6 +1,6 @@
 """Paper trading: what an autopilot would have done with each contradiction, without money.
 
-Three books run side by side, each with its own bankroll, so they can be compared:
+Four books run side by side, each with its own bankroll, so they can be compared:
 
 - single: the safer contract of every contradiction with at least the alerts'
   net saving and the book's own, looser filters (PAPER_MIN_PRICE to
@@ -13,6 +13,12 @@ Three books run side by side, each with its own bankroll, so they can be compare
   PAPER_STRICT_MAX_SPREAD on the contract bought. Much of the first day's
   single book sat in markets with no volume and wide books, marked far below
   cost the moment they were bought.
+- patient: the strict filters without the underlying check, from
+  PATIENT_MIN_HOURS_LEFT (6h) before the market resolves instead of a week,
+  and only a contradiction an earlier scan already saw (at least
+  PATIENT_MIN_AGE_SECONDS ago). In the settled contradictions of Oct 13 - Nov
+  10, those that lasted beyond one scan, and those 6-72 hours from resolving,
+  paid best. It runs on paper next to strict, to see whether it should trade.
 - pair: only where the safer ask is below the dominated rung's bid. Buys the
   safer contract and the other side of the dominated one, which together pay
   at least 1 in every outcome, so the profit is known at entry, after fees.
@@ -41,8 +47,8 @@ from .kalshi import KalshiClient
 from .ladder import ONE, ZERO, Rung, Violation, to_decimal
 from .store import Store
 
-SINGLE, STRICT, PAIR = "single", "strict", "pair"
-STRATEGIES = (SINGLE, STRICT, PAIR)
+SINGLE, STRICT, PAIR, PATIENT = "single", "strict", "pair", "patient"
+STRATEGIES = (SINGLE, STRICT, PAIR, PATIENT)
 
 Leg = tuple[str, str, int, Decimal, Decimal, Decimal]  # ticker, side, count, price, cost with the fee, mid
 
@@ -71,9 +77,38 @@ def single_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
     )
 
 
+def yes_priced(v: Violation, cfg: Config) -> bool:
+    """YES only at YES_MIN_PRICE or above: cheap YES has lost money; NO is bought at any price."""
+    return v.side != "yes" or v.ask >= cfg.yes_min_price
+
+
 def strict_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
     return (alerts.alertable(v, cfg, now) and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
-            and calm.steady(v, cfg, now))
+            and calm.steady(v, cfg, now) and yes_priced(v, cfg))
+
+
+def patient_filters(v: Violation, cfg: Config, now: float | None = None) -> bool:
+    """The alert filters with PATIENT_MIN_HOURS_LEFT for time, the strict spread, and the YES floor.
+
+    Whether an earlier scan saw it is checked where the episodes are at hand (see `seen_before`).
+    """
+    left = v.safer.hours_left(time.time() if now is None else now)
+    return (
+        v.net_saving >= cfg.min_net_saving
+        and cfg.min_price <= v.ask <= cfg.max_price
+        and v.ask_size >= cfg.min_depth
+        and v.safer.volume_24h >= cfg.min_volume_24h
+        and v.dominated.volume_24h >= cfg.min_ref_volume_24h
+        and (left is None or left >= cfg.patient_min_hours_left)
+        and v.safer.spread(v.side) <= cfg.paper_strict_max_spread
+        and yes_priced(v, cfg)
+    )
+
+
+def seen_before(v: Violation, episodes: dict[str, dict], cfg: Config, now: float) -> bool:
+    """An earlier scan, at least PATIENT_MIN_AGE_SECONDS ago, saw this same contradiction."""
+    e = episodes.get("|".join(v.key))
+    return e is not None and now - e["opened_at"] >= cfg.patient_min_age_seconds
 
 
 def wanted(strategy: str, v: Violation, cfg: Config, now: float | None = None) -> bool:
@@ -81,7 +116,8 @@ def wanted(strategy: str, v: Violation, cfg: Config, now: float | None = None) -
     # A locked pair pays whatever happens, so it has no use for the time filter.
     if strategy == PAIR:
         return locked(v)
-    return v.buyable and (single_filters(v, cfg, now) if strategy == SINGLE else strict_filters(v, cfg, now))
+    filters = {SINGLE: single_filters, PATIENT: patient_filters}.get(strategy, strict_filters)
+    return v.buyable and filters(v, cfg, now)
 
 
 def legs(strategy: str, v: Violation, budget: Decimal) -> list[Leg]:
@@ -182,7 +218,9 @@ def _open(store: Store, client: KalshiClient, cfg: Config, violations: list[Viol
     # A book left out of PAPER_BOOKS opens nothing, but what it holds is still marked, sold and settled.
     books = [s for s in STRATEGIES if s in cfg.paper_books]
     busy = {s: {t["event"] for t in trades if t["strategy"] == s and t["status"] == "open"} for s in books}
-    want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg, now)]
+    episodes = store.open_episodes() if PATIENT in books else {}
+    want = {s: [v for v in violations if v.safer.event_ticker not in busy[s] and wanted(s, v, cfg, now)
+                and (s != PATIENT or seen_before(v, episodes, cfg, now))]
             for s in books}
     candidates = list({_key(v): v for s in books for v in want[s]}.values())
     if not candidates:
@@ -306,7 +344,9 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
              f"single buys at {price(cfg.paper_min_price)}-{price(cfg.paper_max_price)}, depth >= "
              f"{cfg.paper_min_depth:g}, 24h volume >= {cfg.paper_min_volume_24h:g}, "
              f"sells at {cfg.paper_take_profit:.0%} of max profit; strict buys what alerts would at "
-             f"{price(cfg.min_price)}-{price(cfg.max_price)}, spread <= {price(cfg.paper_strict_max_spread)}; "
+             f"{price(cfg.min_price)}-{price(cfg.max_price)}, spread <= {price(cfg.paper_strict_max_spread)}, "
+             f"YES from {price(cfg.yes_min_price)}; patient: the same without the underlying check, from "
+             f"{cfg.patient_min_hours_left:g}h left, seen by an earlier scan; "
              f"opening new trades: {', '.join(cfg.paper_books) or 'none'}"]
     for s in STRATEGIES:
         lines += _book(s, [t for t in trades if t["strategy"] == s], cash(trades, s, cfg.paper_bankroll))
@@ -318,7 +358,7 @@ def report(store: Store, cfg: Config, latest: int = 8) -> str:
 
 # Telegram: one message per pass with what happened, in Hebrew like the alerts.
 
-_NAMES = {SINGLE: "בודדת", STRICT: "מחמירה", PAIR: "זוג"}
+_NAMES = {SINGLE: "בודדת", STRICT: "מחמירה", PAIR: "זוג", PATIENT: "סבלנית"}
 _EXITS = {"sold": "נמכר ביעד הרווח", "settled": "הוכרע"}
 _LIMIT = 3500  # Telegram allows 4096 characters a message
 
