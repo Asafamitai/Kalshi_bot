@@ -177,6 +177,7 @@ class Alert:
 
 class Store:
     def __init__(self, path: str):
+        self.path = path
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
         with self._lock, self._conn:

@@ -70,7 +70,7 @@ def test_single_stops_opening_by_default_and_sees_out_what_it_holds(ladder, mk, 
     app.scan_once()
     assert len(book(app, "single")) == 1
     app.cfg = Config(telegram_chat_id="42", telegram_allowed_user_ids=frozenset({"42"}), underlying_min_z=0)
-    assert app.cfg.paper_books == ("strict", "pair")
+    assert app.cfg.paper_books == ("strict", "pair", "patient")
     resolve(client, APP_T175="no", APP_T195="no")
     app.scan_once()
     (single,) = book(app, "single")
@@ -82,7 +82,7 @@ def test_single_stops_opening_by_default_and_sees_out_what_it_holds(ladder, mk, 
 
 
 def test_paper_books_config():
-    assert Config.from_env({}).paper_books == ("strict", "pair")
+    assert Config.from_env({}).paper_books == ("strict", "pair", "patient")
     assert Config.from_env({"PAPER_BOOKS": "Single, pair"}).paper_books == ("single", "pair")
 
 
@@ -379,7 +379,8 @@ def test_paper_bot_hears_what_each_pass_bought(ladder, tmp_path):
     link = '<a href="https://kalshi.com/markets/kxapp?event_ticker=KXAPP-26OCT">'
     assert f"• בודדת · 17 NO {link}APP-T195</a> ב-0.86 · $14.77 · חיסכון 11.0¢ · עובר את סינון ההתראות" in text
     assert "$14.59 · חיסכון 11.0¢ · נעול לפחות +$1.41" in text
-    assert text.endswith("קופה בודדת $485.23 · קופה מחמירה $485.23 · קופה זוג $485.41")
+    # The patient book waits for a second scan, so it buys nothing on the first.
+    assert text.endswith("קופה בודדת $485.23 · קופה מחמירה $485.23 · קופה זוג $485.41 · קופה סבלנית $500.00")
     assert len(alerts_sent(tg)) == 1 and not any("מסחר על נייר" in t for t, _ in tg.sent)
     app.scan_once()
     assert len(paper_tg.sent) == 1  # nothing new, nothing sent
@@ -554,3 +555,63 @@ def test_paper_legs_from_before_the_price_columns(tmp_path):
     Store(str(tmp_path / "t.sqlite3"))
     have = {r[1] for r in sqlite3.connect(tmp_path / "t.sqlite3").execute("PRAGMA table_info(paper_legs)")}
     assert {"entry_mid", "mid_15m", "mid_1h", "mid_4h"} <= have
+
+
+# The YES floor and the patient book
+
+
+def yes_violation(mk, safer_yes_ask):
+    """YES on "above 175" priced below YES on "above 195", which pays in fewer states."""
+    cfg = Config()
+    a = Decimal(safer_yes_ask)
+    ms = [mk("APP-T175", 175, str(a - Decimal("0.02")), str(a)),
+          mk("APP-T195", 195, str(a + Decimal("0.06")), str(a + Decimal("0.08")))]
+    (v,) = [v for v in find_violations(ms, cfg.min_saving, cfg.max_spread) if v.side == "yes"]
+    return v
+
+
+def test_strict_buys_yes_only_from_the_yes_floor(mk):
+    cfg = Config(underlying_min_z=0, calm_min_hours_left=0)
+    cheap, dear = yes_violation(mk, "0.50"), yes_violation(mk, "0.70")
+    assert cheap.ask == D("0.50") and dear.ask == D("0.70")
+    assert not paper.strict_filters(cheap, cfg) and paper.strict_filters(dear, cfg)
+    assert paper.strict_filters(cheap, Config(underlying_min_z=0, calm_min_hours_left=0, yes_min_price=D(0)))
+
+
+def test_yes_floor_config():
+    assert Config.from_env({}).yes_min_price == D("0.60")
+    assert Config.from_env({"YES_MIN_PRICE": "0.5"}).yes_min_price == D("0.5")
+    assert Config.from_env({"PATIENT_MIN_HOURS_LEFT": "12", "PATIENT_MIN_AGE_SECONDS": "600"}).patient_min_hours_left == 12
+
+
+def test_patient_waits_for_a_second_scan(ladder, tmp_path):
+    app, _, _ = make_app(ladder, tmp_path, paper_books=("patient",))
+    app.scan_once()
+    assert book(app, "patient") == []  # first sighting
+    app.clock.now += 60
+    app.scan_once()
+    assert book(app, "patient") == []  # seen a minute ago: too soon
+    app.clock.now += 300
+    app.scan_once()
+    (t,) = book(app, "patient")
+    assert t["safer"] == "APP-T195" and t["side"] == "no"
+
+
+def test_patient_buys_closer_to_resolution_than_strict(mk, tmp_path):
+    # Resolves in 20 hours: inside the patient book's 6h, outside strict's week and the alerts' 24h.
+    soon = datetime.fromtimestamp(Clock().now + 20 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ms = [mk("APP-T175", 175, "0.02", "0.04", close_time=soon), mk("APP-T195", 195, "0.14", "0.16", close_time=soon)]
+    app, _, _ = make_app(ms, tmp_path, paper_books=("strict", "patient"))
+    for _ in range(3):
+        app.scan_once()
+        app.clock.now += 300
+    assert book(app, "strict") == [] and len(book(app, "patient")) == 1
+
+
+def test_patient_skips_the_underlying_check(ladder, tmp_path):
+    # With the underlying check on, the fixture ladder (no known underlying) is never bought by strict.
+    app, _, _ = make_app(ladder, tmp_path, paper_books=("strict", "patient"), underlying_min_z=2)
+    for _ in range(3):
+        app.scan_once()
+        app.clock.now += 300
+    assert book(app, "strict") == [] and len(book(app, "patient")) == 1

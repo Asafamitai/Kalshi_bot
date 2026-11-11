@@ -81,8 +81,19 @@ class Config:
     # contract bought. A wide one costs its spread at once, and its own mid
     # says the cheap ask is no bargain.
     paper_strict_max_spread: Decimal = Decimal("0.05")
+    # YES bought cheap has lost money: in the settled contradictions of Oct 13 -
+    # Nov 10, YES under 0.60 won 40% of the time for -15% after fees, while NO
+    # made money at every price. The strict book (and so automatic trading) and
+    # the patient book buy YES only at this ask or above. 0 is off.
+    yes_min_price: Decimal = Decimal("0.60")
+    # The patient paper book: the strict book's filters without the underlying
+    # check, bought from PATIENT_MIN_HOURS_LEFT before the market resolves
+    # (instead of the strict CALM_MIN_HOURS_LEFT) and only once an earlier scan,
+    # at least PATIENT_MIN_AGE_SECONDS ago, saw the same contradiction.
+    patient_min_hours_left: float = 6
+    patient_min_age_seconds: float = 240
     # The books that open new trades; the others only see out what they hold.
-    paper_books: tuple[str, ...] = ("strict", "pair")
+    paper_books: tuple[str, ...] = ("strict", "pair", "patient")
     # Automatic trading with real money on the strict strategy (switched on
     # with /auto on): what one trade may cost, fees included, and the most it
     # may lose in all. Losses come off the budget and are not refilled.
@@ -158,6 +169,9 @@ class Config:
             paper_min_depth=num("PAPER_MIN_DEPTH", d.paper_min_depth),
             paper_min_volume_24h=num("PAPER_MIN_VOLUME_24H", d.paper_min_volume_24h),
             paper_strict_max_spread=num("PAPER_STRICT_MAX_SPREAD", d.paper_strict_max_spread),
+            yes_min_price=num("YES_MIN_PRICE", d.yes_min_price),
+            patient_min_hours_left=float(env.get("PATIENT_MIN_HOURS_LEFT") or d.patient_min_hours_left),
+            patient_min_age_seconds=float(env.get("PATIENT_MIN_AGE_SECONDS") or d.patient_min_age_seconds),
             paper_books=tuple(b.strip().lower() for b in (env.get("PAPER_BOOKS") or ",".join(d.paper_books)).split(",")
                               if b.strip()),
             live_max_trade=num("LIVE_MAX_TRADE", d.live_max_trade),
