@@ -11,3 +11,6 @@
 __pycache__/
 .pytest_cache/
 .venv/
+
+# Backtest cache (scripts/fetch_episode_markets.py)
+episode_markets.json

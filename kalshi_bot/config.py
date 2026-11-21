@@ -38,6 +38,14 @@ def _subaccount(value: str | None) -> int | None:
     return n
 
 
+def _patterns(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None or not value.strip():
+        return default
+    if value.strip().lower() in ("0", "off", "none", "no"):
+        return ()
+    return tuple(x.strip().upper() for x in value.split(",") if x.strip())
+
+
 @dataclass(frozen=True)
 class Config:
     kalshi_base_url: str = DEFAULT_BASE_URL
@@ -107,6 +115,11 @@ class Config:
     # 1-63 a numbered subaccount. Unset, it is the one the bot created as
     # KALSHI_LADDER_AUTO_BOT, or else the primary account.
     live_subaccount: int | None = None
+    # Series automatic trading never buys: shell-style patterns on the series
+    # ticker, comma-separated in BLOCKED_SERIES ("off" for none). The drink and
+    # brand popularity series (KXPEPSIPOS, KXDRPEPPERPOS, ...) lost money in
+    # November, so they are left alone by default.
+    blocked_series: tuple[str, ...] = ("KX*POS",)
     # Calm markets only, for the strict strategy (automatic trading and its
     # paper twin): the market resolves at least CALM_MIN_HOURS_LEFT away, and
     # its underlying (a yield, an oil or gas price) sits at least
@@ -178,6 +191,7 @@ class Config:
             live_budget=num("LIVE_BUDGET", d.live_budget),
             live_upgrade=num("LIVE_UPGRADE", d.live_upgrade),
             live_subaccount=_subaccount(env.get("KALSHI_LADDER_AUTO_BOT_SUBACCOUNT")),
+            blocked_series=_patterns(env.get("BLOCKED_SERIES"), d.blocked_series),
             paper_telegram_token=env.get("KALSHI_LADDER_AUTO_BOT_TOKEN") or None,
             paper_telegram_chat_id=paper_chat_id,
             paper_telegram_allowed_user_ids=frozenset(paper_allowed),

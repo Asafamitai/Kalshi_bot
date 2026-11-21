@@ -353,6 +353,16 @@ cloud session is stopped after two hours and on a container restart, so the
 session restarts `./run.sh` when that happens. The bot refuses to start a
 second copy on the same database, and `run.sh` stops a stale one first.
 
+### Backtesting the recorded contradictions
+
+`python scripts/fetch_episode_markets.py` reads the current state of every
+contract the episode tables recorded (read-only, cached in
+`episode_markets.json`), then `python scripts/backtest_episodes.py` prints
+what buying each one at the ask seen and holding it to settlement would have
+returned, under several versions of the rules: by side, price, hours to
+resolution and how long the contradiction lasted. Contracts not settled yet
+are marked at today's bid. `DB_PATH` points both at another database.
+
 ## Configuration
 
 See [`.env.example`](.env.example). Real environment variables take

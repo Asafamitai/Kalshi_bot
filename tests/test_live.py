@@ -207,6 +207,26 @@ def test_ai_market_share_series_are_not_bought(ladder, tmp_path, monkeypatch):
     assert client.orders == [] and positions(app) == [] and app.store.auto_on
 
 
+def test_blocked_series_are_not_bought(ladder, tmp_path):
+    app, client, _ = auto_app(ladder, tmp_path, blocked_series=("KXAP*",))
+    app.scan_once()
+    assert client.orders == [] and positions(app) == [] and app.store.auto_on
+
+
+def test_popularity_series_are_blocked_by_default(mk):
+    cfg = Config.from_env({})
+    assert cfg.blocked_series == ("KX*POS",)
+
+    def blocked(event):
+        rung = live.Rung.from_market(mk("X-T1", 1, "0.50", "0.52", event=event))
+        return not live._not_blocked(live.Violation("no", rung, rung), cfg)
+
+    assert blocked("KXPEPSIPOS-26DEC03") and blocked("KXDRPEPPERPOS-26DEC03") and blocked("KXONPOS-26DEC03")
+    assert not blocked("KXCFILCC-26DEC07") and not blocked("KXPOSTAL-26DEC")
+    assert Config.from_env({"BLOCKED_SERIES": "off"}).blocked_series == ()
+    assert Config.from_env({"BLOCKED_SERIES": "kxgolddiry, KX*POS"}).blocked_series == ("KXGOLDDIRY", "KX*POS")
+
+
 def test_up_the_ladder_buys_the_safest_rung_costing_about_the_same(ladder, mk, tmp_path):
     # NO on 195 asks 0.86. Past it: 215 asks 0.89 (within 3¢), 225 too but too thin, 235 asks 0.92 (too dear).
     more = [mk("APP-T205", 205, "0.12", "0.14"), mk("APP-T215", 215, "0.11", "0.12"),
